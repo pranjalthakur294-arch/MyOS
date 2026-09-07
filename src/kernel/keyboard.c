@@ -1,7 +1,7 @@
 #include "keyboard.h"
 #include "io.h"
 #include "pic.h"
-#include "vga.h"
+#include "terminal.h"
 
 /* Modifier states */
 static int left_shift = 0;
@@ -143,11 +143,9 @@ void keyboard_handler(void) {
             }
         }
 
-        /* 6. Output character to VGA */
-        if (c == '\b') {
-            vga_backspace();
-        } else if (c != 0) {
-            vga_putc(c);
+        /* 6. Forward character to terminal discipline layer */
+        if (c != 0) {
+            terminal_putc(c);
         }
     }
 }
