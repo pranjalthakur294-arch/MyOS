@@ -57,6 +57,13 @@ static void vga_newline(void) {
     }
 }
 
+void vga_backspace(void) {
+    if (vga_col > 0) {
+        vga_col--;
+        VGA_BUFFER[vga_row * VGA_WIDTH + vga_col] = vga_entry(' ', vga_current_color);
+    }
+}
+
 void vga_putc(char c) {
     if (c == '\n') {
         vga_newline();
@@ -64,6 +71,10 @@ void vga_putc(char c) {
     }
     if (c == '\r') {
         vga_col = 0;
+        return;
+    }
+    if (c == '\b') {
+        vga_backspace();
         return;
     }
     if (c == '\t') {

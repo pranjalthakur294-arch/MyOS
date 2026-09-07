@@ -1,9 +1,11 @@
 #include "vga.h"
 #include "idt.h"
 #include "pic.h"
+#include "keyboard.h"
 
-/* Assembly ISR stub defined in interrupts.S */
+/* Assembly ISR stubs defined in interrupts.S */
 extern void isr_test_wrapper(void);
+extern void isr_keyboard(void);
 
 /*
  * test_interrupt_handler - C handler called by isr_test_wrapper
@@ -18,7 +20,7 @@ void test_interrupt_handler(void) {
  * kernel_main - C entry point of MyOS
  */
 void kernel_main(void) {
-    /* Initialize the 80x25 VGA text-mode display buffer */
+    /* 1. Initialize the 80x25 VGA text-mode display buffer */
     vga_init();
 
     /* Header Banner */
@@ -36,26 +38,34 @@ void kernel_main(void) {
     vga_puts("[OK] 16 KiB 64-bit kernel stack established\n");
     vga_puts("[OK] Transferred execution to C kernel_main()\n\n");
 
-    /* Stage 2A: Interrupt Foundation Initialization */
+    /* 2. Initialize IDT */
     idt_init();
+
+    /* 3. Initialize & remap PIC */
     pic_init();
 
-    /* Install test ISR wrapper for interrupt vector 0x20 */
+    /* Stage 2A verification: Install and trigger software test interrupt 0x20 */
     idt_set_gate(0x20, isr_test_wrapper, 0x08, IDT_FLAG_INTERRUPT_GATE);
-
-    /* Trigger the test software interrupt to prove IDT dispatch works */
     __asm__ volatile ("int $0x20");
 
-    /* Enable maskable hardware interrupts */
+    /* 4. Install keyboard ISR on vector 0x21 (IRQ1) */
+    idt_set_gate(0x21, isr_keyboard, 0x08, IDT_FLAG_INTERRUPT_GATE);
+
+    /* 5. Initialize keyboard subsystem (unmasks IRQ1 on Master PIC) */
+    keyboard_init();
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("[OK] PS/2 keyboard initialized on IRQ1 (vector 0x21)\n\n");
+
+    /* 6. Enable maskable hardware interrupts */
     __asm__ volatile ("sti");
 
     vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
-    vga_puts("\nStage 2A Goal Achieved: IDT loaded & interrupt dispatch verified!\n\n");
+    vga_puts("Stage 2B Goal Achieved: Keyboard input active!\n");
 
     vga_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    vga_puts("CPU entering idle halt loop (waiting for interrupts)...\n");
+    vga_puts("Type something: ");
 
-    /* Halt loop: Put CPU into low-power halt state waiting for interrupts */
+    /* 7. Halt loop: Put CPU into low-power halt state waiting for keyboard interrupts */
     while (1) {
         __asm__ volatile ("hlt");
     }
