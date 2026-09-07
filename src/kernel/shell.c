@@ -1,5 +1,6 @@
 #include "shell.h"
 #include "vga.h"
+#include "timer.h"
 #include <stddef.h>
 
 /*
@@ -39,18 +40,20 @@ static void builtin_help(const char *args);
 static void builtin_clear(const char *args);
 static void builtin_about(const char *args);
 static void builtin_echo(const char *args);
+static void builtin_uptime(const char *args);
 static void builtin_halt(const char *args);
 
 /*
  * Static command table terminated with a sentinel {NULL, NULL, NULL}.
  */
 static const struct shell_command commands[] = {
-    {"help",  "Display list of available commands", builtin_help},
-    {"clear", "Clear the terminal screen",          builtin_clear},
-    {"about", "Display system information",          builtin_about},
-    {"echo",  "Print arguments to the screen",       builtin_echo},
-    {"halt",  "Halt the system (stops the CPU)",     builtin_halt},
-    {NULL,    NULL,                                  NULL}
+    {"help",   "Display list of available commands", builtin_help},
+    {"clear",  "Clear the terminal screen",          builtin_clear},
+    {"about",  "Display system information",          builtin_about},
+    {"echo",   "Print arguments to the screen",       builtin_echo},
+    {"uptime", "Show system uptime",                 builtin_uptime},
+    {"halt",   "Halt the system (stops the CPU)",     builtin_halt},
+    {NULL,     NULL,                                  NULL}
 };
 
 /*
@@ -64,7 +67,7 @@ static void builtin_help(const char *args) {
         vga_puts("  ");
         vga_puts(commands[i].name);
         size_t name_len = kstrlen(commands[i].name);
-        for (size_t s = name_len; s < 6; s++) {
+        for (size_t s = name_len; s < 7; s++) {
             vga_putc(' ');
         }
         vga_puts("- ");
@@ -92,8 +95,24 @@ static void builtin_about(const char *args) {
     vga_puts("Architecture: x86-64 (Long Mode, 64-bit)\n");
     vga_puts("Paging: 4-level identity paging\n");
     vga_puts("Interrupts: 8259 PIC + 256-entry IDT\n");
+    vga_puts("Timer: PIT Channel 0 @ 100 Hz (IRQ0 / Vector 0x20)\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
+}
+
+/*
+ * Built-in Command: uptime
+ * Displays system uptime in seconds and raw elapsed PIT ticks.
+ */
+static void builtin_uptime(const char *args) {
+    (void)args;
+    uint64_t ticks = timer_get_ticks();
+    uint64_t seconds = ticks / TIMER_FREQUENCY_HZ;
+    vga_puts("Uptime: ");
+    vga_print_dec(seconds);
+    vga_puts(" seconds\nTicks: ");
+    vga_print_dec(ticks);
+    vga_putc('\n');
 }
 
 /*

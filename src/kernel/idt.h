@@ -33,6 +33,10 @@ struct idt_ptr {
 #define IDT_FLAG_INTERRUPT_GATE 0x8E  /* Present=1, DPL=0, Type=0xE (64-bit Interrupt Gate) */
 #define IDT_FLAG_TRAP_GATE      0x8F  /* Present=1, DPL=0, Type=0xF (64-bit Trap Gate) */
 
+/* Hardware IRQ to IDT Vector Remapping (Master PIC base: 0x20) */
+#define IDT_TIMER_VECTOR    0x20  /* IRQ0: Programmable Interval Timer (PIT) */
+#define IDT_KEYBOARD_VECTOR 0x21  /* IRQ1: PS/2 Keyboard */
+
 /* Function prototypes */
 void idt_set_gate(uint8_t vector, void (*handler)(void), uint16_t selector, uint8_t flags);
 void idt_init(void);

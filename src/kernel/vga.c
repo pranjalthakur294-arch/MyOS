@@ -100,3 +100,27 @@ void vga_puts(const char *str) {
         vga_putc(str[i]);
     }
 }
+
+/*
+ * vga_print_dec - Freestanding 64-bit unsigned decimal integer printer.
+ * Avoids libc (printf/itoa) and dynamic memory allocation.
+ */
+void vga_print_dec(uint64_t val) {
+    if (val == 0) {
+        vga_putc('0');
+        return;
+    }
+
+    char buf[21];
+    int idx = 0;
+
+    while (val > 0) {
+        buf[idx++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+
+    while (idx > 0) {
+        vga_putc(buf[--idx]);
+    }
+}
+

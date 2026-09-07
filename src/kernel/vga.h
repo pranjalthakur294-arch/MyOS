@@ -45,5 +45,6 @@ void vga_clear(void);
 void vga_putc(char c);
 void vga_puts(const char *str);
 void vga_backspace(void);
+void vga_print_dec(uint64_t val);
 
 #endif /* VGA_H */

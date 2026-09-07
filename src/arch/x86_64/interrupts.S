@@ -9,13 +9,13 @@
 .section .text
 .code64
 
-.global isr_test_wrapper
-.type isr_test_wrapper, @function
+.global isr_timer
+.type isr_timer, @function
 
-/* External C handler defined in kernel.c */
-.extern test_interrupt_handler
+/* External C handler defined in timer.c */
+.extern timer_handler
 
-isr_test_wrapper:
+isr_timer:
     /*
      * When this wrapper is entered, the CPU has already automatically
      * pushed 5 quadwords (40 bytes) onto the stack:
@@ -44,8 +44,8 @@ isr_test_wrapper:
     /* System V AMD64 ABI requires the Direction Flag to be cleared */
     cld
 
-    /* Invoke the high-level C test interrupt handler */
-    call test_interrupt_handler
+    /* Invoke the high-level C timer interrupt handler */
+    call timer_handler
 
     /* Restore all general-purpose registers in reverse order */
     popq %r15

@@ -4,19 +4,11 @@
 #include "keyboard.h"
 #include "terminal.h"
 #include "shell.h"
+#include "timer.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
-extern void isr_test_wrapper(void);
+extern void isr_timer(void);
 extern void isr_keyboard(void);
-
-/*
- * test_interrupt_handler - C handler called by isr_test_wrapper
- * Invoked when test interrupt 0x20 fires.
- */
-void test_interrupt_handler(void) {
-    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_puts("[OK] Interrupt subsystem initialized (test interrupt handled)\n");
-}
 
 /*
  * kernel_main - C entry point of MyOS
@@ -43,34 +35,37 @@ void kernel_main(void) {
     /* 2. Initialize IDT */
     idt_init();
 
-    /* 3. Initialize & remap PIC */
+    /* 3. Initialize & remap PIC (all IRQs masked initially) */
     pic_init();
 
-    /* Stage 2A verification: Install and trigger software test interrupt 0x20 */
-    idt_set_gate(0x20, isr_test_wrapper, 0x08, IDT_FLAG_INTERRUPT_GATE);
-    __asm__ volatile ("int $0x20");
+    /* 4. Install timer ISR on vector 0x20 (IRQ0) */
+    idt_set_gate(IDT_TIMER_VECTOR, isr_timer, 0x08, IDT_FLAG_INTERRUPT_GATE);
 
-    /* 4. Install keyboard ISR on vector 0x21 (IRQ1) */
-    idt_set_gate(0x21, isr_keyboard, 0x08, IDT_FLAG_INTERRUPT_GATE);
+    /* 5. Install keyboard ISR on vector 0x21 (IRQ1) */
+    idt_set_gate(IDT_KEYBOARD_VECTOR, isr_keyboard, 0x08, IDT_FLAG_INTERRUPT_GATE);
 
-    /* 5. Initialize keyboard subsystem (unmasks IRQ1 on Master PIC) */
-    keyboard_init();
+    /* 6. Initialize PIT timer subsystem (configures Mode 3 @ 100 Hz, unmasks IRQ0) */
+    timer_init();
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("[OK] PIT timer initialized at 100 Hz (IRQ0 / vector 0x20)\n");
+
+    /* 7. Initialize keyboard subsystem (unmasks IRQ1 on Master PIC) */
+    keyboard_init();
     vga_puts("[OK] PS/2 keyboard initialized on IRQ1 (vector 0x21)\n\n");
 
-    /* 6. Initialize shell subsystem */
+    /* 8. Initialize shell subsystem */
     shell_init();
 
     vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
-    vga_puts("Stage 3B Goal Achieved: Shell command parser active!\n\n");
+    vga_puts("Stage 4 Goal Achieved: Hardware timer & timekeeping active!\n\n");
 
-    /* 7. Initialize terminal subsystem (prints initial MyOS> prompt) */
+    /* 9. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();
 
-    /* 8. Enable maskable hardware interrupts */
+    /* 10. Enable maskable hardware interrupts */
     __asm__ volatile ("sti");
 
-    /* 9. Halt loop: Put CPU into low-power halt state waiting for keyboard interrupts */
+    /* 11. Halt loop: Put CPU into low-power halt state waiting for interrupts */
     while (1) {
         __asm__ volatile ("hlt");
     }
