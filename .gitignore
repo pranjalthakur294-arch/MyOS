@@ -1,0 +1,11 @@
+# Build artifacts
+build/
+*.bin
+*.iso
+*.o
+
+# Logs and temporary execution outputs
+*.log
+*.ppm
+__pycache__/
+*.pyc
