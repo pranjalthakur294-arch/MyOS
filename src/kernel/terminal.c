@@ -1,5 +1,6 @@
 #include "terminal.h"
 #include "vga.h"
+#include "shell.h"
 
 /* Fixed-size static line input buffer in BSS */
 static char line_buffer[TERMINAL_BUFFER_SIZE];
@@ -29,7 +30,7 @@ void terminal_init(void) {
  *
  * Enforces:
  *   - Enter ('\n'): Commits current line, moves cursor to next line,
- *     resets buffer, and displays a fresh prompt.
+ *     passes line to shell_execute(), resets buffer, and displays fresh prompt.
  *   - Backspace ('\b'): Only allows erasing user-entered characters.
  *     If line_len == 0, Backspace is safely dropped to protect the prompt.
  *   - Printable characters: Appends to line_buffer if space is available,
@@ -39,11 +40,15 @@ void terminal_putc(char c) {
     if (c == '\n') {
         vga_putc('\n');
 
-        /*
-         * Stage 3A: Finalize line buffer.
-         * (Stage 3B will pass line_buffer to shell_execute() here).
-         */
+        /* Finalize line buffer */
         line_buffer[line_len] = '\0';
+
+        /* Pass completed command line to shell */
+        if (line_len > 0) {
+            shell_execute(line_buffer);
+        }
+
+        /* Reset line buffer only AFTER shell_execute() returns */
         line_len = 0;
         line_buffer[0] = '\0';
 

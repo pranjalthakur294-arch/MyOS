@@ -3,6 +3,7 @@
 #include "pic.h"
 #include "keyboard.h"
 #include "terminal.h"
+#include "shell.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_test_wrapper(void);
@@ -57,16 +58,19 @@ void kernel_main(void) {
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("[OK] PS/2 keyboard initialized on IRQ1 (vector 0x21)\n\n");
 
-    vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
-    vga_puts("Stage 3A Goal Achieved: Terminal discipline active!\n\n");
+    /* 6. Initialize shell subsystem */
+    shell_init();
 
-    /* 6. Initialize terminal subsystem (prints initial MyOS> prompt) */
+    vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
+    vga_puts("Stage 3B Goal Achieved: Shell command parser active!\n\n");
+
+    /* 7. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();
 
-    /* 7. Enable maskable hardware interrupts */
+    /* 8. Enable maskable hardware interrupts */
     __asm__ volatile ("sti");
 
-    /* 8. Halt loop: Put CPU into low-power halt state waiting for keyboard interrupts */
+    /* 9. Halt loop: Put CPU into low-power halt state waiting for keyboard interrupts */
     while (1) {
         __asm__ volatile ("hlt");
     }
