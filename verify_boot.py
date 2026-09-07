@@ -48,9 +48,10 @@ def main():
     print("COLOR ATTRIBUTE VALIDATION:")
     color_samples = [
         (1, "Header Banner", 0x0B),
-        (4, "Checkpoints", 0x0A),
-        (11, "Stage 1 Achieved", 0x0E),
-        (13, "Halt Message", 0x0F)
+        (4, "Stage 1 Checkpoints", 0x0A),
+        (11, "Interrupt Subsystem", 0x0A),
+        (13, "Stage 2A Achieved", 0x0E),
+        (15, "Halt Message", 0x0F)
     ]
     for r, label, expected in color_samples:
         attr = chars[(r * 80 + 5) * 2 + 1]

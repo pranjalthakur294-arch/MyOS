@@ -43,8 +43,8 @@ LDFLAGS := -nostdlib -z max-page-size=0x1000 -T linker.ld
 ASFLAGS := -c
 
 # Sources and Object Files
-C_SRCS   := $(SRC_DIR)/kernel/kernel.c $(SRC_DIR)/kernel/vga.c
-ASM_SRCS := $(SRC_DIR)/arch/x86_64/boot.S
+C_SRCS   := $(SRC_DIR)/kernel/kernel.c $(SRC_DIR)/kernel/vga.c $(SRC_DIR)/kernel/idt.c $(SRC_DIR)/kernel/pic.c
+ASM_SRCS := $(SRC_DIR)/arch/x86_64/boot.S $(SRC_DIR)/arch/x86_64/interrupts.S
 
 C_OBJS   := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(C_SRCS))
 ASM_OBJS := $(patsubst $(SRC_DIR)/%.S, $(BUILD_DIR)/%.o, $(ASM_SRCS))
