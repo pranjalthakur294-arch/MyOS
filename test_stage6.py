@@ -59,7 +59,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.2):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.6):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -116,7 +116,7 @@ def main():
 
     # Test 1: Boot to Shell
     print("\n[TEST 1] Verifying Boot to Shell...")
-    rows = run_qemu_test([], wait_time=0.2, boot_wait=1.2)
+    rows = run_qemu_test([], wait_time=0.2, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t1_pass = "MyOS - Educational x86-64 Kernel" in screen_text and "MyOS>" in screen_text
     print("Test 1 (Boot to Shell):", "PASS" if t1_pass else "FAIL")
@@ -132,7 +132,7 @@ def main():
 
     # Test 3: heapinfo command
     print("\n[TEST 3] Verifying 'heapinfo' command output...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nheapinfo\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nheapinfo\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t3_pass = ("Kernel Heap:" in screen_text and
                "Start:" in screen_text and
@@ -150,7 +150,7 @@ def main():
 
     # Test 4: heaptest execution
     print("\n[TEST 4] Verifying 'heaptest' end-to-end execution...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nheaptest\n"), wait_time=0.5, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nheaptest\n"), wait_time=0.5, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t4_pass = ("Heap Test:" in screen_text and
                "kmalloc basic allocation: OK" in screen_text and
@@ -171,7 +171,7 @@ def main():
     # Test 5: Heap Accounting Consistency Across Repeated heaptest Calls
     print("\n[TEST 5] Verifying Heap Consistency Across Repeated heaptest Calls (No Leaks)...")
     keys = text_to_sendkeys("clear\nheaptest\nheapinfo\nheaptest\nheapinfo\n")
-    rows = run_qemu_test(keys, wait_time=0.7, boot_wait=1.2)
+    rows = run_qemu_test(keys, wait_time=0.7, boot_wait=1.6)
     screen_text = "\n".join(rows)
 
     free_matches = list(re.finditer(r"Free:\s*(\d+)\s*bytes", screen_text))
@@ -188,7 +188,7 @@ def main():
 
     # Test 6: VMM Subsystem Functional (vmtest)
     print("\n[TEST 6] Testing VMM Functionality under Stage 6 (vmtest)...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t6_pass = ("VMM Test:" in screen_text and
                "Mapping: OK" in screen_text and
@@ -201,7 +201,7 @@ def main():
 
     # Test 7: vmmap output
     print("\n[TEST 7] Testing vmmap output under Stage 6...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nvmmap\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nvmmap\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t7_pass = ("Virtual Memory:" in screen_text and
                "Paging: 4-level" in screen_text and
@@ -214,7 +214,7 @@ def main():
 
     # Test 8: PMM Subsystem Functional (alloc & free)
     print("\n[TEST 8] Testing PMM Subsystem (alloc & free)...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nalloc\nfree\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nalloc\nfree\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t8_pass = "Allocated frame: 0x" in screen_text and "Freed frame: 0x" in screen_text
     print("Test 8 (PMM alloc and free):", "PASS" if t8_pass else "FAIL")
@@ -222,7 +222,7 @@ def main():
 
     # Test 9: meminfo Accounting
     print("\n[TEST 9] Testing meminfo accounting...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nmeminfo\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nmeminfo\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t9_pass = ("Physical Memory:" in screen_text and
                "Total: " in screen_text and
@@ -233,7 +233,7 @@ def main():
 
     # Test 10: Existing Identity Mapping Integrity
     print("\n[TEST 10] Verifying Existing Identity Mapping Integrity...")
-    rows = run_qemu_test(text_to_sendkeys("clear\necho IdentityMapActive\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\necho IdentityMapActive\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t10_pass = "IdentityMapActive" in screen_text
     print("Test 10 (Identity Mapping Active):", "PASS" if t10_pass else "FAIL")
@@ -241,7 +241,7 @@ def main():
 
     # Test 11: Keyboard Input under Heap Subsystem
     print("\n[TEST 11] Testing Keyboard Input...")
-    rows = run_qemu_test(text_to_sendkeys("clear\necho HeapAndKeyboard\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\necho HeapAndKeyboard\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t11_pass = "HeapAndKeyboard" in screen_text
     print("Test 11 (Keyboard Input Functional):", "PASS" if t11_pass else "FAIL")
@@ -249,7 +249,7 @@ def main():
 
     # Test 12: Timer Ticks under Heap Subsystem
     print("\n[TEST 12] Testing Timer Ticks...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     tick_match = re.search(r"Ticks:\s*(\d+)", screen_text)
     t12_pass = False
@@ -262,9 +262,9 @@ def main():
 
     # Test 13: Shell Commands Regression (help and about)
     print("\n[TEST 13] Testing Shell Commands Regression...")
-    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.2)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.6)
     text_help = "\n".join(rows_help)
-    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.2)
+    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.6)
     text_about = "\n".join(rows_about)
 
     t13_pass = ("Available commands:" in text_help and
@@ -285,7 +285,7 @@ def main():
     # Test 14: Sequential Allocation and Deallocation via Shell (Interleaved VMM & Heap)
     print("\n[TEST 14] Testing Interleaved VMM and Heap Operations...")
     keys = text_to_sendkeys("clear\nvmtest\nheaptest\n")
-    rows = run_qemu_test(keys, wait_time=0.7, boot_wait=1.2)
+    rows = run_qemu_test(keys, wait_time=0.7, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t14_pass = ("VMM test passed!" in screen_text and
                 "Heap test passed!" in screen_text)

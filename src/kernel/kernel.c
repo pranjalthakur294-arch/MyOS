@@ -11,6 +11,8 @@
 #include "heap.h"
 #include "task.h"
 #include "scheduler.h"
+#include "gdt.h"
+#include "user.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -27,9 +29,7 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
 
     /* Header Banner */
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_puts("================================================================\n");
-    vga_puts("             MyOS - Educational x86-64 Kernel                   \n");
-    vga_puts("================================================================\n");
+    vga_puts("================  MyOS - Educational x86-64 Kernel  ================\n");
 
     /* Stage 1 Checkpoint */
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -37,6 +37,9 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
 
     /* 2. Initialize IDT */
     idt_init();
+
+    /* 2b. Initialize GDT & TSS (Ring 0/3 descriptors, dedicated RSP0 stack) */
+    gdt_init();
 
     /* 3. Install Page Fault exception handler on vector 14 (#PF) */
     idt_set_gate(IDT_PAGE_FAULT_VECTOR, isr_page_fault, 0x08, IDT_FLAG_INTERRUPT_GATE);
@@ -75,6 +78,9 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 12. Initialize Kernel Heap */
     heap_init();
 
+    /* 12b. Initialize User Mode Subsystem */
+    user_init();
+
     /* 13. Initialize Kernel Task Subsystem */
     task_init();
 
@@ -100,6 +106,7 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     vga_puts("Stage 6 Goal Achieved: Dynamic kernel heap allocator active!\n");
     vga_puts("Stage 7A Goal Achieved: Manual context switching active!\n");
     vga_puts("Stage 7B Goal Achieved: Timer-driven round-robin scheduler active!\n");
+    vga_puts("Stage 8A Goal Achieved: User mode Ring 3 foundation active!\n");
 
     /* 16. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();

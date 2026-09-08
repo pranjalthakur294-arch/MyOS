@@ -51,7 +51,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.2):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.6):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",

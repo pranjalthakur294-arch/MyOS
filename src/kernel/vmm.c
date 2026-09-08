@@ -80,6 +80,8 @@ int vmm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t f
             return -2;
         }
         pml4[pml4_idx] = ((uint64_t)new_pdpt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else if (flags & PTE_USER) {
+        pml4[pml4_idx] |= PTE_USER;
     }
     uint64_t *pdpt = (uint64_t *)(pml4[pml4_idx] & PTE_ADDR_MASK);
 
@@ -94,6 +96,8 @@ int vmm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t f
             return -2;
         }
         pdpt[pdpt_idx] = ((uint64_t)new_pd & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else if (flags & PTE_USER) {
+        pdpt[pdpt_idx] |= PTE_USER;
     }
     uint64_t *pd = (uint64_t *)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
 
@@ -108,6 +112,8 @@ int vmm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t f
             return -2;
         }
         pd[pd_idx] = ((uint64_t)new_pt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else if (flags & PTE_USER) {
+        pd[pd_idx] |= PTE_USER;
     }
     uint64_t *pt = (uint64_t *)(pd[pd_idx] & PTE_ADDR_MASK);
 
@@ -237,6 +243,60 @@ int vmm_get_mapping(uint64_t virtual_address, uint64_t *physical_address) {
 
     /* 4 KiB page */
     *physical_address = (pt[pt_idx] & PTE_ADDR_MASK) + PAGE_OFFSET(virtual_address);
+    return 0;
+}
+
+/*
+ * vmm_get_page_flags - Returns the leaf architectural PTE flags for a virtual address.
+ *
+ * Parameters:
+ *   virtual_address - Virtual address to inspect.
+ *   flags           - Output pointer for flags bits.
+ *
+ * Returns:
+ *    0 on success.
+ *   -1 if unmapped.
+ */
+int vmm_get_page_flags(uint64_t virtual_address, uint64_t *flags) {
+    if (!flags) {
+        return -1;
+    }
+
+    uint64_t pml4_phys = vmm_read_cr3() & PTE_ADDR_MASK;
+    uint64_t *pml4 = (uint64_t *)pml4_phys;
+
+    uint64_t pml4_idx = PML4_INDEX(virtual_address);
+    if (!(pml4[pml4_idx] & PTE_PRESENT)) {
+        return -1;
+    }
+    uint64_t *pdpt = (uint64_t *)(pml4[pml4_idx] & PTE_ADDR_MASK);
+
+    uint64_t pdpt_idx = PDPT_INDEX(virtual_address);
+    if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
+        return -1;
+    }
+    if (pdpt[pdpt_idx] & PTE_HUGE) {
+        *flags = pdpt[pdpt_idx] & ~PTE_ADDR_MASK;
+        return 0;
+    }
+    uint64_t *pd = (uint64_t *)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
+
+    uint64_t pd_idx = PD_INDEX(virtual_address);
+    if (!(pd[pd_idx] & PTE_PRESENT)) {
+        return -1;
+    }
+    if (pd[pd_idx] & PTE_HUGE) {
+        *flags = pd[pd_idx] & ~PTE_ADDR_MASK;
+        return 0;
+    }
+    uint64_t *pt = (uint64_t *)(pd[pd_idx] & PTE_ADDR_MASK);
+
+    uint64_t pt_idx = PT_INDEX(virtual_address);
+    if (!(pt[pt_idx] & PTE_PRESENT)) {
+        return -1;
+    }
+
+    *flags = pt[pt_idx] & ~PTE_ADDR_MASK;
     return 0;
 }
 

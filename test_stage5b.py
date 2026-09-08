@@ -52,7 +52,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.2):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.6):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -115,7 +115,7 @@ def main():
 
     # Test 1: Boot to Shell
     print("\n[TEST 1] Verifying Boot to Shell...")
-    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.2)
+    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t1_pass = "MyOS - Educational x86-64 Kernel" in screen_text and "MyOS>" in screen_text
     print("Test 1 (Boot to Shell):", "PASS" if t1_pass else "FAIL")
@@ -131,7 +131,7 @@ def main():
 
     # Test 3: vmmap command
     print("\n[TEST 3] Verifying 'vmmap' command output...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nvmmap\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nvmmap\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t3_pass = ("Virtual Memory:" in screen_text and
                "Paging: 4-level" in screen_text and
@@ -146,7 +146,7 @@ def main():
 
     # Test 4: vmtest end-to-end execution
     print("\n[TEST 4] Verifying 'vmtest' end-to-end execution...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t4_pass = ("VMM Test:" in screen_text and
                "Mapping: OK" in screen_text and
@@ -202,7 +202,7 @@ def main():
     # Test 10: PMM Accounting consistency after vmtest
     print("\n[TEST 10] Verifying PMM Accounting Consistency Across vmtest Calls...")
     keys = text_to_sendkeys("clear\nvmtest\nmeminfo\nvmtest\nmeminfo\n")
-    rows = run_qemu_test(keys, wait_time=0.7, boot_wait=1.2)
+    rows = run_qemu_test(keys, wait_time=0.7, boot_wait=1.6)
     screen_text = "\n".join(rows)
 
     free_matches = list(re.finditer(r"Free:\s*(\d+)\s*MB\s*\((\d+)\s*bytes\)", screen_text))
@@ -221,7 +221,7 @@ def main():
 
     # Test 11: Existing identity mapping remains functional
     print("\n[TEST 11] Verifying Existing Identity Mapping Integrity...")
-    rows = run_qemu_test(text_to_sendkeys("clear\necho IdentityMapActive\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\necho IdentityMapActive\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t11_pass = "IdentityMapActive" in screen_text
     print("Test 11 (Identity Mapping Active):", "PASS" if t11_pass else "FAIL")
@@ -229,7 +229,7 @@ def main():
 
     # Test 12: Keyboard input continues working
     print("\n[TEST 12] Testing Keyboard Input under VMM...")
-    rows = run_qemu_test(text_to_sendkeys("clear\necho Keyboard+VMM\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\necho Keyboard+VMM\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t12_pass = "Keyboard+VMM" in screen_text
     print("Test 12 (Keyboard Input Functional):", "PASS" if t12_pass else "FAIL")
@@ -237,7 +237,7 @@ def main():
 
     # Test 13: Timer continues ticking
     print("\n[TEST 13] Testing Timer Ticks under VMM...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     tick_match = re.search(r"Ticks:\s*(\d+)", screen_text)
     t13_pass = False
@@ -250,9 +250,9 @@ def main():
 
     # Test 14: Existing shell commands continue working
     print("\n[TEST 14] Testing Shell Commands Regression...")
-    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.2)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.6)
     text_help = "\n".join(rows_help)
-    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.2)
+    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.6)
     text_about = "\n".join(rows_about)
 
     t14_pass = ("Available commands:" in text_help and

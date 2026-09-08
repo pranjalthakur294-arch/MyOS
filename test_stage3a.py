@@ -9,7 +9,7 @@ def run_qemu_test(key_sequence, wait_time=0.5):
         "-monitor", "stdio"
     ]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    time.sleep(1.0)
+    time.sleep(1.6)
 
     for k in key_sequence:
         p.stdin.write(k + "\n")

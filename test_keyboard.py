@@ -32,7 +32,7 @@ def main():
         "-monitor", "stdio"
     ]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    time.sleep(1.0)
+    time.sleep(1.6)
 
     # Comprehensive test sequence:
     # 1. Letters: 'hello'

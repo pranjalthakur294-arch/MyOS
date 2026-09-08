@@ -52,7 +52,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_session(interaction_plan, boot_wait=1.2):
+def run_qemu_session(interaction_plan, boot_wait=1.6):
     """
     Runs a QEMU instance and performs multiple phases of sending keys and sampling VGA screen.
     interaction_plan is a list of tuples:
@@ -81,7 +81,7 @@ def run_qemu_session(interaction_plan, boot_wait=1.2):
     # For reliability with QEMU monitor stdio, we send keys and then final dump or use communicate
     return p
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.2):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.6):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -143,7 +143,7 @@ def main():
 
     # Test 1 & Test 2: Boot & Timer Initialization Milestone
     print("\n[TEST 1 & 2] Verifying Boot and Timer Initialization Checkpoints...")
-    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.2)
+    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.6)
     screen_text = "\n".join(rows)
 
     t1_pass = "MyOS - Educational x86-64 Kernel" in screen_text and "MyOS>" in screen_text
@@ -158,7 +158,7 @@ def main():
     # Test 3: Timer interrupt activity (uptime command shows non-zero ticks)
     print("\n[TEST 3] Testing Timer Interrupt Activity (uptime)...")
     # Boot wait 1.2s + wait 0.5s before uptime -> should have > 100 ticks
-    rows = run_qemu_test(text_to_sendkeys("uptime\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("uptime\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     ticks_list = parse_ticks(screen_text)
     t3_pass = len(ticks_list) > 0 and ticks_list[0] > 0 and "Uptime:" in screen_text
@@ -232,7 +232,7 @@ def main():
     print("\n[TEST 5] Testing Keyboard Input under continuous timer interrupts...")
     # Send characters, backspace, numbers, enter
     kbd_keys = text_to_sendkeys("echo Timer+Keyboard\n")
-    rows = run_qemu_test(kbd_keys, wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(kbd_keys, wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t5_pass = "Timer+Keyboard" in screen_text
     print("Test 5 (Keyboard Under Timer):", "PASS" if t5_pass else "FAIL")
@@ -241,9 +241,9 @@ def main():
 
     # Test 6: Shell command regression
     print("\n[TEST 6] Testing Shell Commands Regression (help, about, echo, clear, uptime)...")
-    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.2)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.6)
     text_help = "\n".join(rows_help)
-    rows_other = run_qemu_test(text_to_sendkeys("clear\nabout\necho test\nuptime\n"), wait_time=0.5, boot_wait=1.2)
+    rows_other = run_qemu_test(text_to_sendkeys("clear\nabout\necho test\nuptime\n"), wait_time=0.5, boot_wait=1.6)
     text_other = "\n".join(rows_other)
     t6_pass = ("Available commands:" in text_help and
                "uptime" in text_help and

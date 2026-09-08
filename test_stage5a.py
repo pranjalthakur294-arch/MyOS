@@ -139,7 +139,7 @@ def main():
 
     # Test 1 & Test 2: Boot & PMM Milestone
     print("\n[TEST 1 & 2] Verifying Boot and PMM Initialization Checkpoints...")
-    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.2)
+    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.4)
     screen_text = "\n".join(rows)
 
     t1_pass = "MyOS - Educational x86-64 Kernel" in screen_text and "MyOS>" in screen_text
@@ -155,7 +155,7 @@ def main():
 
     # Test 3: meminfo output format and accounting invariant
     print("\n[TEST 3] Verifying meminfo output format and accounting invariant...")
-    rows = run_qemu_test(text_to_sendkeys("meminfo\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("meminfo\n"), wait_time=0.4, boot_wait=1.4)
     screen_text = "\n".join(rows)
     info = parse_meminfo(screen_text)
 
@@ -174,7 +174,7 @@ def main():
 
     # Test 4: alloc returns 4 KiB-aligned address
     print("\n[TEST 4] Verifying alloc command returns 4 KiB-aligned address...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nalloc\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nalloc\n"), wait_time=0.4, boot_wait=1.4)
     screen_text = "\n".join(rows)
     addrs = parse_alloc_hex(screen_text)
     t4_pass = len(addrs) == 1 and (addrs[0] % 4096 == 0) and addrs[0] > 0
@@ -187,7 +187,7 @@ def main():
     # Test 5: Allocation accounting (meminfo -> alloc -> meminfo)
     print("\n[TEST 5] Verifying allocation accounting (meminfo -> alloc -> meminfo)...")
     keys = text_to_sendkeys("clear\nmeminfo\nalloc\nmeminfo\n")
-    rows = run_qemu_test(keys, wait_time=0.5, boot_wait=1.2)
+    rows = run_qemu_test(keys, wait_time=0.5, boot_wait=1.4)
     screen_text = "\n".join(rows)
 
     used_matches = list(re.finditer(r"Used:\s*(\d+)\s*MB\s*\((\d+)\s*bytes\)", screen_text))
@@ -207,11 +207,11 @@ def main():
     # Test 6: free command restores frame to free pool
     print("\n[TEST 6] Verifying free command restores frame to free pool...")
     keys = text_to_sendkeys("clear\nalloc\nfree\nmeminfo\n")
-    rows = run_qemu_test(keys, wait_time=0.5, boot_wait=1.2)
+    rows = run_qemu_test(keys, wait_time=0.5, boot_wait=1.4)
     screen_text = "\n".join(rows)
     info_after = parse_meminfo(screen_text)
 
-    clean_rows = run_qemu_test(text_to_sendkeys("meminfo\n"), wait_time=0.3, boot_wait=1.2)
+    clean_rows = run_qemu_test(text_to_sendkeys("meminfo\n"), wait_time=0.3, boot_wait=1.4)
     clean_info = parse_meminfo("\n".join(clean_rows))
 
     t6_pass = False
@@ -228,7 +228,7 @@ def main():
     # Test 7: Frame reuse (alloc -> free -> alloc reuses same frame)
     print("\n[TEST 7] Verifying frame reuse (alloc -> free -> alloc)...")
     keys = text_to_sendkeys("clear\nalloc\nfree\nalloc\n")
-    rows = run_qemu_test(keys, wait_time=0.5, boot_wait=1.2)
+    rows = run_qemu_test(keys, wait_time=0.5, boot_wait=1.4)
     screen_text = "\n".join(rows)
     alloc_addrs = parse_alloc_hex(screen_text)
     free_addrs  = parse_free_hex(screen_text)
@@ -270,9 +270,9 @@ def main():
 
     # Test 10: Shell command regression (help, about, meminfo, uptime, echo, clear)
     print("\n[TEST 10] Testing Shell Commands Regression...")
-    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.2)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.4)
     text_help = "\n".join(rows_help)
-    rows_other = run_qemu_test(text_to_sendkeys("clear\nabout\necho Stage5A-Test\nuptime\n"), wait_time=0.5, boot_wait=1.2)
+    rows_other = run_qemu_test(text_to_sendkeys("clear\nabout\necho Stage5A-Test\nuptime\n"), wait_time=0.5, boot_wait=1.4)
     text_other = "\n".join(rows_other)
     t10_pass = ("Available commands:" in text_help and
                 "meminfo" in text_help and

@@ -93,6 +93,17 @@
   - Shell commands: `tasks` (updated with `Switches` column tracking per-task context switch count) and `sched` (reports scheduler policy, timer frequency, total ticks, context switches, current task PID/name, and active tasks).
   - *Note: Stage 7B establishes preemptive kernel-mode round-robin scheduling and does not implement priority queues, dynamic sleep/blocking, user mode (Ring 3), or SMP.*
 
+- **Stage 8A: User Mode / Ring 3 Foundation**
+  - Global Descriptor Table (GDT) expanded to 6 descriptors (7 entries / 56 bytes) containing Kernel Code (`0x08`, DPL 0), Kernel Data (`0x10`, DPL 0), User Data (`0x18`, DPL 3, RPL 3: `0x1B`), User Code (`0x20`, DPL 3, RPL 3: `0x23`), and a 16-byte 64-bit Available TSS descriptor (`0x28` / `0x30`, DPL 0).
+  - 64-bit Task State Segment (TSS) defined per AMD64/Intel specifications with dedicated 16-byte aligned kernel interrupt stack (`user_kernel_stack`) configured in `RSP0` and loaded into the CPU Task Register (`ltr 0x28`).
+  - User virtual address space at `0x60000000` (code page) and `0x60001000` (stack/data page, stack top `0x60002000`) mapped with `PTE_USER | PTE_WRITABLE | PTE_PRESENT`.
+  - VMM updated with `vmm_get_page_flags()` and hierarchical `PTE_USER` propagation across PML4, PDPT, and PD tables, ensuring user access is architecturally permitted while retaining supervisor-only protection on kernel identity pages.
+  - Dedicated low-level privilege transition routine `switch_to_user_mode` constructing a 5-quadword `IRETQ` frame (`SS=0x1B`, `RSP=0x60002000`, `RFLAGS=0x202`, `CS=0x23`, `RIP=0x60000000`) and executing `iretq`.
+  - Minimal user test program executing entirely at CPL 3: reads `%cs`, confirms `CPL == 3`, writes `observed_cpl = 3` and canary magic `0x1337BEEF` to user memory, runs an iteration loop, and traps cleanly back to Ring 0 via IDT vector `0x80` (`IDT_FLAG_USER_INTERRUPT_GATE = 0xEE`).
+  - Privilege transition return routine `isr_user_return` restoring kernel data segments, capturing hardware-saved `CS` (`0x23`) and `SS` (`0x1B`), and returning to C kernel control.
+  - Shell commands: `gdtinfo` (displays GDT descriptor table, selectors, and TSS RSP0 state) and `usertest` (triggers Ring 3 transition and validates CPL 3, canary magic, loop count, and hardware frames).
+  - *Note: Stage 8A establishes the hardware and memory foundations for Ring 3 and does not yet implement syscall/sysret, ELF loading, file systems, or separate user process address spaces.*
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -160,18 +171,22 @@ MyOS/
 ├── test_stage6.py               # Stage 6 automated test suite
 ├── test_stage7a.py              # Stage 7A automated test suite
 ├── test_stage7b.py              # Stage 7B automated test suite
+├── test_stage8a.py              # Stage 8A automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
     │       ├── boot.S           # Multiboot headers & 32-bit to 64-bit transition
     │       ├── interrupts.S     # Low-level 64-bit ISR stubs (timer, keyboard, #PF)
-    │       └── context_switch.S # Cooperative assembly context switch routine
+    │       ├── context_switch.S # Cooperative assembly context switch routine
+    │       └── user.S           # switch_to_user_mode, user program & isr_user_return
     └── kernel/
         ├── io.h                 # Port I/O inline assembly (inb, outb, io_wait)
         ├── vga.h                # VGA text mode interface (colors, print_dec, print_hex)
         ├── vga.c                # VGA driver implementation
         ├── idt.h                # IDT descriptor structures & vector definitions
         ├── idt.c                # IDT table & lidt loading (#PF handler)
+        ├── gdt.h                # GDT segment selectors, TSS struct & API definitions
+        ├── gdt.c                # 64-bit GDT table, TSS initialization & lgdt/ltr
         ├── pic.h                # 8259 PIC interface & EOI handling
         ├── pic.c                # PIC initialization, remapping & masking
         ├── keyboard.h           # PS/2 keyboard interface
@@ -193,6 +208,8 @@ MyOS/
         ├── task.c               # Task management, cooperative switching & demo
         ├── scheduler.h          # Round-robin scheduler interface & statistics
         ├── scheduler.c          # Preemptive round-robin scheduler & demo tasks
+        ├── user.h               # User mode subsystem interface & status block definitions
+        ├── user.c               # User memory mapping, vector 0x80 gate & verification
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -223,5 +240,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage7b.py
+python3 test_stage8a.py
 ```

@@ -30,13 +30,15 @@ struct idt_ptr {
 } __attribute__((packed));
 
 /* Common IDT gate flags */
-#define IDT_FLAG_INTERRUPT_GATE 0x8E  /* Present=1, DPL=0, Type=0xE (64-bit Interrupt Gate) */
-#define IDT_FLAG_TRAP_GATE      0x8F  /* Present=1, DPL=0, Type=0xF (64-bit Trap Gate) */
+#define IDT_FLAG_INTERRUPT_GATE      0x8E  /* Present=1, DPL=0, Type=0xE (64-bit Interrupt Gate) */
+#define IDT_FLAG_TRAP_GATE           0x8F  /* Present=1, DPL=0, Type=0xF (64-bit Trap Gate) */
+#define IDT_FLAG_USER_INTERRUPT_GATE 0xEE  /* Present=1, DPL=3, Type=0xE (64-bit User Interrupt Gate) */
 
 /* Hardware IRQ to IDT Vector Remapping (Master PIC base: 0x20) */
-#define IDT_PAGE_FAULT_VECTOR 14  /* Exception 14: Page Fault (#PF) */
-#define IDT_TIMER_VECTOR      0x20  /* IRQ0: Programmable Interval Timer (PIT) */
-#define IDT_KEYBOARD_VECTOR   0x21  /* IRQ1: PS/2 Keyboard */
+#define IDT_PAGE_FAULT_VECTOR   14    /* Exception 14: Page Fault (#PF) */
+#define IDT_TIMER_VECTOR        0x20  /* IRQ0: Programmable Interval Timer (PIT) */
+#define IDT_KEYBOARD_VECTOR     0x21  /* IRQ1: PS/2 Keyboard */
+#define IDT_USER_RETURN_VECTOR  0x80  /* Vector 0x80: User Mode Trap Return */
 
 /* Function prototypes */
 void idt_set_gate(uint8_t vector, void (*handler)(void), uint16_t selector, uint8_t flags);

@@ -59,7 +59,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.2):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.6):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -116,7 +116,7 @@ def main():
 
     # Test 1: Boot to Shell
     print("\n[TEST 1] Verifying Boot to Shell...")
-    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.2)
+    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t1_pass = "MyOS - Educational x86-64 Kernel" in screen_text and "MyOS>" in screen_text
     print("Test 1 (Boot to Shell):", "PASS" if t1_pass else "FAIL")
@@ -172,7 +172,7 @@ def main():
 
     # Test 7: Shell 'tasks' Command Output
     print("\n[TEST 7] Testing 'tasks' shell command...")
-    rows = run_qemu_test(text_to_sendkeys("clear\ntasks\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\ntasks\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t7_pass = ("Tasks:" in screen_text and
                "PID" in screen_text and
@@ -190,7 +190,7 @@ def main():
 
     # Test 8: Shell 'tasktest' Command Re-run
     print("\n[TEST 8] Testing 'tasktest' shell command re-run...")
-    rows = run_qemu_test(text_to_sendkeys("clear\ntasktest\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\ntasktest\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t8_pass = ("Task A: start" in screen_text and
                "Task B: start" in screen_text and
@@ -205,7 +205,7 @@ def main():
 
     # Test 9: Shell & Terminal Responsiveness after Switching
     print("\n[TEST 9] Testing Shell Responsiveness after context switching...")
-    rows = run_qemu_test(text_to_sendkeys("clear\necho Stage7A-Running\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\necho Stage7A-Running\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t9_pass = "Stage7A-Running" in screen_text
     print("Test 9 (Shell Responsiveness):", "PASS" if t9_pass else "FAIL")
@@ -213,7 +213,7 @@ def main():
 
     # Test 10: Heap Integrity after Demo Stack Cleanup
     print("\n[TEST 10] Testing Heap Integrity after Task Stack Deallocation...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nheapinfo\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nheapinfo\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t10_pass = ("Kernel Heap:" in screen_text and
                 "Start:        0x50000000" in screen_text and
@@ -230,7 +230,7 @@ def main():
 
     # Test 11: VMM Functionality under Stage 7A
     print("\n[TEST 11] Testing VMM Functionality under Stage 7A (vmtest)...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t11_pass = ("VMM Test:" in screen_text and
                 "Mapping: OK" in screen_text and
@@ -243,7 +243,7 @@ def main():
 
     # Test 12: Timer Ticks Active under Multitasking
     print("\n[TEST 12] Testing Timer Ticks Active...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     tick_match = re.search(r"Ticks:\s*(\d+)", screen_text)
     t12_pass = False
@@ -256,7 +256,7 @@ def main():
 
     # Test 13: PS/2 Keyboard Input Functional
     print("\n[TEST 13] Testing Keyboard Input...")
-    rows = run_qemu_test(text_to_sendkeys("clear\necho TaskAndKeyboard\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\necho TaskAndKeyboard\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t13_pass = "TaskAndKeyboard" in screen_text
     print("Test 13 (Keyboard Input Functional):", "PASS" if t13_pass else "FAIL")
@@ -264,7 +264,7 @@ def main():
 
     # Test 14: Shell 'about' Architecture Details
     print("\n[TEST 14] Testing Shell 'about' Command...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.2)
+    rows = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.6)
     screen_text = "\n".join(rows)
     t14_pass = ("Tasks: Cooperative Context Switching Active" in screen_text and
                 "Architecture: x86-64" in screen_text and

@@ -6,6 +6,8 @@
 #include "heap.h"
 #include "task.h"
 #include "scheduler.h"
+#include "gdt.h"
+#include "user.h"
 #include <stddef.h>
 
 /*
@@ -56,6 +58,8 @@ static void builtin_heaptest(const char *args);
 static void builtin_tasks(const char *args);
 static void builtin_tasktest(const char *args);
 static void builtin_sched(const char *args);
+static void builtin_gdtinfo(const char *args);
+static void builtin_usertest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -77,6 +81,8 @@ static const struct shell_command commands[] = {
     {"tasks",    "Kernel tasks list",     builtin_tasks},
     {"tasktest", "Test task switching",   builtin_tasktest},
     {"sched",    "Scheduler statistics",  builtin_sched},
+    {"gdtinfo",  "GDT and TSS info",      builtin_gdtinfo},
+    {"usertest", "Test Ring 3 user mode", builtin_usertest},
     {"halt",     "Halt system",           builtin_halt},
     {NULL,       NULL,                    NULL}
 };
@@ -126,6 +132,7 @@ static void builtin_about(const char *args) {
     vga_puts("Heap: 64 KiB Free-List Dynamic Allocator\n");
     vga_puts("Tasks: Cooperative Context Switching Active\n");
     vga_puts("Scheduler: Timer-Driven Round-Robin Active\n");
+    vga_puts("User Mode: Ring 3 Foundation Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -417,6 +424,24 @@ static void builtin_echo(const char *args) {
         vga_puts(args);
     }
     vga_putc('\n');
+}
+
+/*
+ * Built-in Command: gdtinfo
+ * Displays GDT descriptor and TSS configuration.
+ */
+static void builtin_gdtinfo(const char *args) {
+    (void)args;
+    gdt_print_info();
+}
+
+/*
+ * Built-in Command: usertest
+ * Executes Ring 3 user mode transition and prints verification results.
+ */
+static void builtin_usertest(const char *args) {
+    (void)args;
+    user_print_status();
 }
 
 /*

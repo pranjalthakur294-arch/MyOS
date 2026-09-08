@@ -83,6 +83,7 @@ void vmm_init(void);
 int vmm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t flags);
 int vmm_unmap_page(uint64_t virtual_address);
 int vmm_get_mapping(uint64_t virtual_address, uint64_t *physical_address);
+int vmm_get_page_flags(uint64_t virtual_address, uint64_t *flags);
 
 int vmm_run_test(void);
 
