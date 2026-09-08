@@ -27,16 +27,29 @@ static uint64_t *vmm_allocate_table_frame(void) {
     return table;
 }
 
+static uint64_t boot_cr3 = 0;
+
+/*
+ * vmm_get_boot_cr3 - Returns the physical address of the initial boot PML4.
+ */
+uint64_t vmm_get_boot_cr3(void) {
+    if (boot_cr3 == 0) {
+        boot_cr3 = vmm_read_cr3() & PTE_ADDR_MASK;
+    }
+    return boot_cr3;
+}
+
 /*
  * vmm_init - Initializes the Virtual Memory Manager.
  * Discovers the active PML4 table from the CPU's CR3 register.
  */
 void vmm_init(void) {
     uint64_t cr3 = vmm_read_cr3();
+    boot_cr3 = cr3 & PTE_ADDR_MASK;
 
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("[OK] Virtual memory manager initialized (CR3: ");
-    vga_print_hex(cr3 & PTE_ADDR_MASK);
+    vga_print_hex(boot_cr3);
     vga_puts(")\n");
 }
 
@@ -190,23 +203,24 @@ int vmm_unmap_page(uint64_t virtual_address) {
 }
 
 /*
- * vmm_get_mapping - Resolves the physical address mapped to a virtual address.
+ * vmm_get_mapping_in_pml4 - Resolves the physical address mapped to a virtual address
+ * in an arbitrary PML4 table.
  *
  * Parameters:
+ *   pml4_phys        - Physical address of target PML4 table.
  *   virtual_address  - Virtual address to inspect.
  *   physical_address - Output pointer for resolved physical address.
  *
  * Returns:
  *    0 on success.
- *   -1 if unmapped.
+ *   -1 if unmapped or invalid input.
  */
-int vmm_get_mapping(uint64_t virtual_address, uint64_t *physical_address) {
-    if (!physical_address) {
+int vmm_get_mapping_in_pml4(uint64_t pml4_phys, uint64_t virtual_address, uint64_t *physical_address) {
+    if (!physical_address || !pml4_phys) {
         return -1;
     }
 
-    uint64_t pml4_phys = vmm_read_cr3() & PTE_ADDR_MASK;
-    uint64_t *pml4 = (uint64_t *)pml4_phys;
+    uint64_t *pml4 = (uint64_t *)(pml4_phys & PTE_ADDR_MASK);
 
     uint64_t pml4_idx = PML4_INDEX(virtual_address);
     if (!(pml4[pml4_idx] & PTE_PRESENT)) {
@@ -247,23 +261,31 @@ int vmm_get_mapping(uint64_t virtual_address, uint64_t *physical_address) {
 }
 
 /*
- * vmm_get_page_flags - Returns the leaf architectural PTE flags for a virtual address.
+ * vmm_get_mapping - Resolves the physical address mapped to a virtual address in current CR3.
+ */
+int vmm_get_mapping(uint64_t virtual_address, uint64_t *physical_address) {
+    return vmm_get_mapping_in_pml4(vmm_read_cr3(), virtual_address, physical_address);
+}
+
+/*
+ * vmm_get_page_flags_in_pml4 - Returns the leaf architectural PTE flags for a virtual address
+ * in an arbitrary PML4 table.
  *
  * Parameters:
+ *   pml4_phys       - Physical address of target PML4 table.
  *   virtual_address - Virtual address to inspect.
  *   flags           - Output pointer for flags bits.
  *
  * Returns:
  *    0 on success.
- *   -1 if unmapped.
+ *   -1 if unmapped or invalid input.
  */
-int vmm_get_page_flags(uint64_t virtual_address, uint64_t *flags) {
-    if (!flags) {
+int vmm_get_page_flags_in_pml4(uint64_t pml4_phys, uint64_t virtual_address, uint64_t *flags) {
+    if (!flags || !pml4_phys) {
         return -1;
     }
 
-    uint64_t pml4_phys = vmm_read_cr3() & PTE_ADDR_MASK;
-    uint64_t *pml4 = (uint64_t *)pml4_phys;
+    uint64_t *pml4 = (uint64_t *)(pml4_phys & PTE_ADDR_MASK);
 
     uint64_t pml4_idx = PML4_INDEX(virtual_address);
     if (!(pml4[pml4_idx] & PTE_PRESENT)) {
@@ -298,6 +320,13 @@ int vmm_get_page_flags(uint64_t virtual_address, uint64_t *flags) {
 
     *flags = pt[pt_idx] & ~PTE_ADDR_MASK;
     return 0;
+}
+
+/*
+ * vmm_get_page_flags - Returns the leaf architectural PTE flags for a virtual address in current CR3.
+ */
+int vmm_get_page_flags(uint64_t virtual_address, uint64_t *flags) {
+    return vmm_get_page_flags_in_pml4(vmm_read_cr3(), virtual_address, flags);
 }
 
 /*
@@ -364,6 +393,166 @@ int vmm_run_test(void) {
 
     /* 8. Free physical frame */
     pmm_free_frame(phys_frame);
+
+    return 0;
+}
+
+/*
+ * vmm_create_process_pml4 - Creates a new PML4 table for a process.
+ *
+ * Establishes the necessary supervisor kernel mappings:
+ *   - Clones PML4[0] / PDPT[0] (0..1 GiB identity mapping, supervisor-only).
+ *   - Clones kernel heap mapping (PD[128], supervisor-only).
+ *
+ * Parameters:
+ *   out_pml4_phys    - Output pointer for allocated PML4 root frame.
+ *   tables           - Array to record allocated page table frames for cleanup.
+ *   table_count      - In/out pointer tracking count of recorded table frames.
+ *   max_tables       - Maximum capacity of tables array.
+ *
+ * Returns:
+ *   0 on success, negative on error.
+ */
+int vmm_create_process_pml4(uint64_t *out_pml4_phys, uint64_t *tables, size_t *table_count, size_t max_tables) {
+    if (!out_pml4_phys || !tables || !table_count || *table_count >= max_tables) {
+        return -1;
+    }
+
+    uint64_t boot_pml4_phys = vmm_get_boot_cr3();
+    uint64_t *boot_pml4 = (uint64_t *)boot_pml4_phys;
+
+    /* 1. Allocate process PML4 frame */
+    uint64_t *proc_pml4 = vmm_allocate_table_frame();
+    if (!proc_pml4) {
+        return -2;
+    }
+    uint64_t proc_pml4_phys = (uint64_t)proc_pml4;
+    *out_pml4_phys = proc_pml4_phys;
+
+    /* 2. Allocate process PDPT frame for PML4[0] */
+    uint64_t *proc_pdpt = vmm_allocate_table_frame();
+    if (!proc_pdpt) {
+        pmm_free_frame(proc_pml4_phys);
+        return -2;
+    }
+    uint64_t proc_pdpt_phys = (uint64_t)proc_pdpt;
+    tables[(*table_count)++] = proc_pdpt_phys;
+
+    /* Set PML4[0] with User bit (leaf/intermediate permissions will restrict kernel pages) */
+    proc_pml4[0] = proc_pdpt_phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+
+    /* 3. Link Kernel Identity Map (0..1 GiB) into proc_pdpt[0] */
+    uint64_t *boot_pdpt = (uint64_t *)(boot_pml4[0] & PTE_ADDR_MASK);
+    proc_pdpt[0] = boot_pdpt[0]; /* Points to shared boot_pd_table (supervisor-only) */
+
+    /* 4. Allocate per-process PD frame for 1 GiB..2 GiB (PDPT[1]) */
+    if (*table_count >= max_tables) {
+        return -3;
+    }
+    uint64_t *proc_pd = vmm_allocate_table_frame();
+    if (!proc_pd) {
+        return -2;
+    }
+    uint64_t proc_pd_phys = (uint64_t)proc_pd;
+    tables[(*table_count)++] = proc_pd_phys;
+    proc_pdpt[1] = proc_pd_phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+
+    /* 5. Link Kernel Heap (0x50000000) from boot PD */
+    if (boot_pdpt[1] & PTE_PRESENT) {
+        uint64_t *boot_pd1 = (uint64_t *)(boot_pdpt[1] & PTE_ADDR_MASK);
+        /* Entry 128 (0x80) covers 0x50000000..0x501FFFFF (kernel heap) */
+        proc_pd[128] = boot_pd1[128]; /* Shared kernel heap PT (supervisor-only) */
+    }
+
+    return 0;
+}
+
+/*
+ * vmm_map_page_in_pml4 - Maps a 4 KiB virtual page in a specified PML4 root.
+ *
+ * Parameters:
+ *   pml4_phys        - Physical address of target PML4 table.
+ *   virtual_address  - 4 KiB aligned virtual address to map.
+ *   physical_address - 4 KiB aligned physical frame to map to.
+ *   flags            - Permissions (e.g. PTE_PRESENT | PTE_USER).
+ *   tables           - Array tracking allocated intermediate table frames.
+ *   table_count      - In/out pointer tracking count of recorded table frames.
+ *   max_tables       - Capacity of tables array.
+ *
+ * Returns:
+ *   0 on success, negative on error.
+ */
+int vmm_map_page_in_pml4(uint64_t pml4_phys, uint64_t virtual_address, uint64_t physical_address, uint64_t flags,
+                         uint64_t *tables, size_t *table_count, size_t max_tables) {
+    if ((virtual_address & (VMM_PAGE_SIZE - 1)) != 0 ||
+        (physical_address & (VMM_PAGE_SIZE - 1)) != 0) {
+        return -1;
+    }
+
+    uint64_t high_bits = virtual_address >> 47;
+    if (high_bits != 0 && high_bits != 0x1FFFFULL) {
+        return -1;
+    }
+
+    uint64_t *pml4 = (uint64_t *)(pml4_phys & PTE_ADDR_MASK);
+
+    /* Level 4: PML4 -> PDPT */
+    uint64_t pml4_idx = PML4_INDEX(virtual_address);
+    if (!(pml4[pml4_idx] & PTE_PRESENT)) {
+        if (!tables || !table_count || *table_count >= max_tables) return -2;
+        uint64_t *new_pdpt = vmm_allocate_table_frame();
+        if (!new_pdpt) return -2;
+        tables[(*table_count)++] = (uint64_t)new_pdpt;
+        pml4[pml4_idx] = ((uint64_t)new_pdpt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else if (flags & PTE_USER) {
+        pml4[pml4_idx] |= PTE_USER;
+    }
+    uint64_t *pdpt = (uint64_t *)(pml4[pml4_idx] & PTE_ADDR_MASK);
+
+    /* Level 3: PDPT -> PD */
+    uint64_t pdpt_idx = PDPT_INDEX(virtual_address);
+    if (pdpt[pdpt_idx] & PTE_HUGE) {
+        return -3;
+    }
+    if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
+        if (!tables || !table_count || *table_count >= max_tables) return -2;
+        uint64_t *new_pd = vmm_allocate_table_frame();
+        if (!new_pd) return -2;
+        tables[(*table_count)++] = (uint64_t)new_pd;
+        pdpt[pdpt_idx] = ((uint64_t)new_pd & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else if (flags & PTE_USER) {
+        pdpt[pdpt_idx] |= PTE_USER;
+    }
+    uint64_t *pd = (uint64_t *)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
+
+    /* Level 2: PD -> PT */
+    uint64_t pd_idx = PD_INDEX(virtual_address);
+    if (pd[pd_idx] & PTE_HUGE) {
+        return -3;
+    }
+    if (!(pd[pd_idx] & PTE_PRESENT)) {
+        if (!tables || !table_count || *table_count >= max_tables) return -2;
+        uint64_t *new_pt = vmm_allocate_table_frame();
+        if (!new_pt) return -2;
+        tables[(*table_count)++] = (uint64_t)new_pt;
+        pd[pd_idx] = ((uint64_t)new_pt & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+    } else if (flags & PTE_USER) {
+        pd[pd_idx] |= PTE_USER;
+    }
+    uint64_t *pt = (uint64_t *)(pd[pd_idx] & PTE_ADDR_MASK);
+
+    /* Level 1: PT -> 4 KiB Physical Page */
+    uint64_t pt_idx = PT_INDEX(virtual_address);
+    if (pt[pt_idx] & PTE_PRESENT) {
+        return -4; /* Already mapped */
+    }
+
+    pt[pt_idx] = (physical_address & PTE_ADDR_MASK) | (flags & ~PTE_ADDR_MASK) | PTE_PRESENT;
+
+    /* Invalidate TLB if mapping in current address space */
+    if ((vmm_read_cr3() & PTE_ADDR_MASK) == (pml4_phys & PTE_ADDR_MASK)) {
+        vmm_invlpg(virtual_address);
+    }
 
     return 0;
 }

@@ -1,6 +1,9 @@
 #include "scheduler.h"
 #include "task.h"
 #include "vga.h"
+#include "process.h"
+#include "vmm.h"
+#include "gdt.h"
 #include <stddef.h>
 
 /*
@@ -213,6 +216,27 @@ uint64_t scheduler_tick(uint64_t current_rsp) {
 
     /* Update current task reference */
     task_set_current(next);
+    current_process = (process_t *)next->process;
+
+    /* Switch CR3 address space if necessary */
+    uint64_t current_cr3 = vmm_read_cr3() & PTE_ADDR_MASK;
+    if (next->cr3 != 0 && next->cr3 != current_cr3) {
+        vmm_write_cr3(next->cr3);
+    } else if (next->cr3 == 0) {
+        uint64_t boot_cr3 = vmm_get_boot_cr3();
+        if (current_cr3 != boot_cr3) {
+            vmm_write_cr3(boot_cr3);
+        }
+    }
+
+    /* Update TSS.rsp0 if next task is a user process */
+    if (next->process) {
+        process_t *proc = (process_t *)next->process;
+        gdt_set_rsp0(proc->kernel_stack_top);
+    }
+
+    /* Deferred reaping: pass interrupted task 'curr' so its active stack is not reaped */
+    process_reap_terminated_ex(curr);
 
     scheduler_in_schedule = false;
     return next->rsp;

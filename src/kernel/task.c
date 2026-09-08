@@ -83,6 +83,8 @@ void task_init(void) {
         task_table[i].arg = NULL;
         task_table[i].switch_count = 0;
         task_table[i].name[0] = '\0';
+        task_table[i].cr3 = 0;
+        task_table[i].process = NULL;
     }
 
     /* Initialize Task 0 (Main / Kernel) */
@@ -94,6 +96,8 @@ void task_init(void) {
     task_table[0].entry = NULL;
     task_table[0].arg = NULL;
     task_table[0].switch_count = 0;
+    task_table[0].cr3 = 0;
+    task_table[0].process = NULL;
     str_copy(task_table[0].name, "main", sizeof(task_table[0].name));
 
     current_task = &task_table[0];
@@ -228,6 +232,69 @@ task_t *task_create_coop(task_entry_t entry, void *arg, const char *name) {
     *(--sp) = 0ULL;                           /* R13 */
     *(--sp) = 0ULL;                           /* R14 */
     *(--sp) = 0ULL;                           /* R15 */
+
+    t->rsp = (uint64_t)sp;
+    return t;
+}
+
+/*
+ * task_create_user - Allocates a task slot and stack for a Ring 3 user process.
+ *
+ * Constructs the initial 20-quadword interrupt frame configured for Ring 3:
+ *   CS = 0x23 (User Code, RPL 3)
+ *   SS = 0x1B (User Data, RPL 3)
+ *   RFLAGS = 0x202 (IF=1)
+ *   RIP = user_entry
+ *   RSP = user_rsp
+ *
+ * Parameters:
+ *   user_entry - Virtual address of process entry point.
+ *   user_rsp   - Virtual address of user stack top.
+ *   cr3        - Process PML4 address.
+ *   proc       - Pointer to parent process_t structure.
+ *   name       - Process name string.
+ *
+ * Returns:
+ *   Pointer to initialized task_t, or NULL if task table is full.
+ */
+task_t *task_create_user(uint64_t user_entry, uint64_t user_rsp, uint64_t cr3, void *proc, const char *name) {
+    int slot = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (task_table[i].state == TASK_UNUSED || task_table[i].state == TASK_FINISHED) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        return NULL;
+    }
+
+    task_t *t = &task_table[slot];
+    t->id = (uint32_t)slot;
+    t->state = TASK_READY;
+    t->stack_base = (void *)task_stacks[slot];
+    t->stack_size = TASK_STACK_SIZE;
+    t->entry = NULL;
+    t->arg = NULL;
+    t->switch_count = 0;
+    t->cr3 = cr3;
+    t->process = proc;
+    str_copy(t->name, name ? name : "user", sizeof(t->name));
+
+    /* Construct the 20-quadword interrupt stack frame */
+    uint64_t stack_top = ((uint64_t)task_stacks[slot] + TASK_STACK_SIZE) & ~0xFULL;
+    uint64_t *sp = (uint64_t *)(stack_top - 160);
+
+    sp[19] = 0x1BULL;                         /* SS: User Data Segment (RPL 3) */
+    sp[18] = user_rsp;                        /* RSP: User Stack Pointer */
+    sp[17] = 0x202ULL;                        /* RFLAGS: interrupts enabled (IF=1) */
+    sp[16] = 0x23ULL;                         /* CS: User Code Segment (RPL 3) */
+    sp[15] = user_entry;                      /* RIP: User Code Entry Point */
+
+    /* 15 GPRs popped by isr_timer (%r15..%rax) */
+    for (int j = 0; j < 15; j++) {
+        sp[j] = 0ULL;
+    }
 
     t->rsp = (uint64_t)sp;
     return t;

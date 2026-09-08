@@ -13,6 +13,7 @@
 #include "scheduler.h"
 #include "gdt.h"
 #include "user.h"
+#include "process.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -83,6 +84,9 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
 
     /* 13. Initialize Kernel Task Subsystem */
     task_init();
+
+    /* 13b. Initialize Process Management Subsystem (Stage 9) */
+    process_init();
 
     /* 14. Run Manual Cooperative Context Switch Demonstration */
     task_run_demo();

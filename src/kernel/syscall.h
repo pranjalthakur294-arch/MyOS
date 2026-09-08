@@ -59,8 +59,10 @@ void syscall_init(void);
 int64_t syscall_dispatch(uint64_t number, uint64_t arg1, uint64_t arg2);
 int64_t sys_write(const char *user_buffer, size_t length);
 int64_t sys_gettime(void);
-int64_t sys_exit(int64_t status);
 bool syscall_validate_user_buffer(const void *ptr, size_t len);
+bool syscall_validate_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, size_t len);
+bool syscall_validate_writable_user_buffer(const void *ptr, size_t len);
+bool syscall_validate_writable_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, size_t len);
 
 int syscall_run_test(void);
 void syscall_print_status(void);

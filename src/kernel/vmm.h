@@ -84,7 +84,14 @@ int vmm_map_page(uint64_t virtual_address, uint64_t physical_address, uint64_t f
 int vmm_unmap_page(uint64_t virtual_address);
 int vmm_get_mapping(uint64_t virtual_address, uint64_t *physical_address);
 int vmm_get_page_flags(uint64_t virtual_address, uint64_t *flags);
-
 int vmm_run_test(void);
+
+/* Stage 9 Process Address Space API */
+uint64_t vmm_get_boot_cr3(void);
+int vmm_get_mapping_in_pml4(uint64_t pml4_phys, uint64_t virtual_address, uint64_t *physical_address);
+int vmm_get_page_flags_in_pml4(uint64_t pml4_phys, uint64_t virtual_address, uint64_t *flags);
+int vmm_create_process_pml4(uint64_t *out_pml4_phys, uint64_t *tables, size_t *table_count, size_t max_tables);
+int vmm_map_page_in_pml4(uint64_t pml4_phys, uint64_t virtual_address, uint64_t physical_address, uint64_t flags,
+                         uint64_t *tables, size_t *table_count, size_t max_tables);
 
 #endif /* VMM_H */

@@ -9,6 +9,7 @@
 #include "gdt.h"
 #include "user.h"
 #include "syscall.h"
+#include "process.h"
 #include <stddef.h>
 
 /*
@@ -62,6 +63,8 @@ static void builtin_sched(const char *args);
 static void builtin_gdtinfo(const char *args);
 static void builtin_usertest(const char *args);
 static void builtin_syscalltest(const char *args);
+static void builtin_ps(const char *args);
+static void builtin_proctest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -86,6 +89,8 @@ static const struct shell_command commands[] = {
     {"gdtinfo",     "GDT and TSS info",      builtin_gdtinfo},
     {"usertest",    "Test Ring 3 user mode", builtin_usertest},
     {"syscalltest", "Test system calls",     builtin_syscalltest},
+    {"ps",          "Process status list",   builtin_ps},
+    {"proctest",    "Test process isolation",builtin_proctest},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -137,6 +142,7 @@ static void builtin_about(const char *args) {
     vga_puts("Scheduler: Timer-Driven Round-Robin Active\n");
     vga_puts("User Mode: Ring 3 Foundation Active\n");
     vga_puts("Syscalls: int 0x80 (SYS_WRITE, SYS_GETTIME)\n");
+    vga_puts("Processes: Isolated Address Spaces (CR3) Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -455,6 +461,24 @@ static void builtin_usertest(const char *args) {
 static void builtin_syscalltest(const char *args) {
     (void)args;
     syscall_print_status();
+}
+
+/*
+ * Built-in Command: ps
+ * Displays active and terminated processes in the system.
+ */
+static void builtin_ps(const char *args) {
+    (void)args;
+    process_print_list();
+}
+
+/*
+ * Built-in Command: proctest
+ * Executes Stage 9 multi-process isolation and scheduling verification suite.
+ */
+static void builtin_proctest(const char *args) {
+    (void)args;
+    process_print_test_status();
 }
 
 /*

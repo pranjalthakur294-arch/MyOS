@@ -11,6 +11,7 @@
 #include "vga.h"
 #include "timer.h"
 #include "user.h"
+#include "process.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -38,22 +39,23 @@ void syscall_init(void) {
 }
 
 /*
- * syscall_validate_user_buffer - Rigorous memory validator for Ring 3 pointers.
+ * syscall_validate_user_buffer_in_pml4 - Memory validator for Ring 3 pointers against
+ * a specific process PML4 address space.
  *
  * Guarantees:
  *   1. Rejects NULL pointers.
  *   2. Rejects integer arithmetic overflow (start + len < start).
- *   3. Rejects addresses outside the Stage 8A user address space [0x60000000, 0x60002000).
- *   4. Validates all touched 4 KiB pages via leaf page table flags.
+ *   3. Rejects addresses outside user address space [0x60000000, 0x60002000).
+ *   4. Validates all touched 4 KiB pages via leaf page table flags in target PML4.
  *   5. Ensures all touched pages have PTE_PRESENT and PTE_USER set.
- *   6. Strictly forbids access to supervisor/kernel memory (0x0 - 0x40000000) or heap (0x50000000).
+ *   6. Strictly forbids access to supervisor/kernel memory or unmapped pages.
  *
  * Returns:
  *   true if the entire range [ptr, ptr + len) is safely accessible by user mode.
  *   false if any part of the range is invalid or violates protection.
  */
-bool syscall_validate_user_buffer(const void *ptr, size_t len) {
-    if (ptr == NULL) {
+bool syscall_validate_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, size_t len) {
+    if (ptr == NULL || pml4_phys == 0) {
         return false;
     }
 
@@ -84,7 +86,7 @@ bool syscall_validate_user_buffer(const void *ptr, size_t len) {
 
     for (uint64_t page = page_start; page <= page_end; page += VMM_PAGE_SIZE) {
         uint64_t flags = 0;
-        if (vmm_get_page_flags(page, &flags) != 0) {
+        if (vmm_get_page_flags_in_pml4(pml4_phys, page, &flags) != 0) {
             return false; /* Page not mapped in page tables */
         }
         if (!(flags & PTE_PRESENT)) {
@@ -96,6 +98,79 @@ bool syscall_validate_user_buffer(const void *ptr, size_t len) {
     }
 
     return true;
+}
+
+/*
+ * syscall_validate_user_buffer - Validates user buffer against CURRENT PROCESS address space.
+ */
+bool syscall_validate_user_buffer(const void *ptr, size_t len) {
+    uint64_t cr3 = vmm_read_cr3() & PTE_ADDR_MASK;
+    process_t *curr = process_current();
+    if (curr && curr->cr3 != 0) {
+        cr3 = curr->cr3 & PTE_ADDR_MASK;
+    }
+    return syscall_validate_user_buffer_in_pml4(cr3, ptr, len);
+}
+
+/*
+ * syscall_validate_writable_user_buffer_in_pml4 - Validates that buffer is writable by user in PML4.
+ * Fails if any page is read-only (such as the user code page).
+ */
+bool syscall_validate_writable_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, size_t len) {
+    if (ptr == NULL || pml4_phys == 0) {
+        return false;
+    }
+
+    uint64_t start = (uint64_t)ptr;
+
+    if (len == 0) {
+        if (start < USER_CODE_VADDR || start >= USER_STACK_TOP) {
+            return false;
+        }
+        return true;
+    }
+
+    uint64_t end = start + len;
+    if (end <= start) {
+        return false;
+    }
+
+    if (start < USER_CODE_VADDR || end > USER_STACK_TOP) {
+        return false;
+    }
+
+    uint64_t page_start = start & ~(VMM_PAGE_SIZE - 1);
+    uint64_t page_end = (end - 1) & ~(VMM_PAGE_SIZE - 1);
+
+    for (uint64_t page = page_start; page <= page_end; page += VMM_PAGE_SIZE) {
+        uint64_t flags = 0;
+        if (vmm_get_page_flags_in_pml4(pml4_phys, page, &flags) != 0) {
+            return false;
+        }
+        if (!(flags & PTE_PRESENT)) {
+            return false;
+        }
+        if (!(flags & PTE_USER)) {
+            return false;
+        }
+        if (!(flags & PTE_WRITABLE)) {
+            return false; /* Write to read-only page violation (e.g. user code page!) */
+        }
+    }
+
+    return true;
+}
+
+/*
+ * syscall_validate_writable_user_buffer - Validates writable user buffer against CURRENT PROCESS address space.
+ */
+bool syscall_validate_writable_user_buffer(const void *ptr, size_t len) {
+    uint64_t cr3 = vmm_read_cr3() & PTE_ADDR_MASK;
+    process_t *curr = process_current();
+    if (curr && curr->cr3 != 0) {
+        cr3 = curr->cr3 & PTE_ADDR_MASK;
+    }
+    return syscall_validate_writable_user_buffer_in_pml4(cr3, ptr, len);
 }
 
 /*
@@ -147,7 +222,9 @@ int64_t sys_gettime(void) {
  * sys_exit - Terminates user program execution and returns to kernel.
  */
 int64_t sys_exit(int64_t status) {
-    (void)status;
+    if (process_current() != NULL) {
+        process_exit(status);
+    }
     return 0;
 }
 
@@ -164,6 +241,9 @@ int64_t sys_exit(int64_t status) {
  */
 int64_t syscall_dispatch(uint64_t number, uint64_t arg1, uint64_t arg2) {
     switch (number) {
+        case SYS_EXIT:
+            return sys_exit((int64_t)arg1);
+
         case SYS_WRITE:
             return sys_write((const char *)arg1, (size_t)arg2);
 

@@ -123,6 +123,36 @@
     - Executes entirely at CPL 3, verifies CPL == 3, invokes `SYS_WRITE`, tests `SYS_GETTIME` monotonicity, verifies `-ENOSYS` on invalid syscalls, and verifies `-EFAULT` on invalid pointers.
   - Shell command: `syscalltest` (runs Ring 3 syscall verification and prints comprehensive test results).
 
+- **Stage 9: First Real Process Management Foundation**
+  - Architectural transition from cooperative/preemptive kernel tasks to real, isolated user processes (`process_t`).
+  - Process Table (`proc_table`) managing up to 8 processes (`MAX_PROCESSES = 8`).
+  - Process states: `PROCESS_UNUSED`, `PROCESS_READY`, `PROCESS_RUNNING`, `PROCESS_TERMINATED`.
+  - Process types: `PROCESS_TYPE_KERNEL` (PID 0, boot/shell thread using boot PML4) and `PROCESS_TYPE_USER` (Ring 3 processes with private PML4 page tables).
+  - True Address-Space Isolation via CR3:
+    - Dedicated 4 KiB PML4 page directory allocated per process via `vmm_create_process_pml4()`.
+    - Lower 1 GiB identity mapping cloned from boot PML4, guaranteeing kernel execution, interrupt servicing, and memory managers remain accessible in all address spaces.
+    - Private physical frames mapped at identical user virtual addresses (`0x60000000` for user code, `0x60001000` for user stack/data).
+    - Writes by Process A to VA `0x60001800` do NOT affect Process B writing to VA `0x60001800` because each process has a distinct CR3 root pointing to separate physical frames.
+  - Preemptive Multitasking & Context Switching:
+    - Integrated with Stage 7B 100 Hz PIT timer interrupt and round-robin scheduler.
+    - Upon selecting a task in `scheduler_tick()`:
+      - Switches CPU page directory root via `vmm_write_cr3(next->cr3)`.
+      - Updates TSS kernel interrupt stack pointer via `gdt_set_rsp0(proc->kernel_stack_top)` so any subsequent interrupt/exception in user mode uses the process's private kernel stack.
+      - Tracks active process via `current_process`.
+      - Performs deferred reaping of terminated processes.
+  - Process Lifecycle & Memory Reclamation:
+    - `process_create()` allocates user code/stack frames, private PML4, kernel stack, and registers a user task frame.
+    - `SYS_EXIT` syscall (`sys_exit()`) marks the calling user process as `PROCESS_TERMINATED` and halts the thread until descheduled.
+    - Deferred reaper (`process_reap_terminated()`) invoked by the scheduler unmaps user pages, frees physical frames (user code, user stack, private PML4, kernel stack), resets process and task slots for PID reuse with zero memory leaks.
+  - User-Space Process Syscalls:
+    - Ring 3 processes issue `SYS_WRITE` and `SYS_GETTIME` via `int 0x80`, returning results into user registers via original hardware `iretq` frame.
+    - Termination via `SYS_EXIT` triggers clean kernel transition and task descheduling.
+  - Shell Commands:
+    - `ps`: Displays process table status (PID, STATE, TYPE, CR3, NAME).
+    - `proctest`: Automated in-kernel test creating Process A and Process B, executing concurrent Ring 3 workloads, validating VA isolation at `0x60001800`, timer preemption, user syscalls, memory reclamation (0 leaks), and PID reuse.
+  - Architectural Boundaries & Scope:
+    - Deliberately does NOT implement an ELF loader (binaries are compiled in kernel and loaded at `0x60000000`), `fork()`/`exec()`, signals, pipes, or a virtual filesystem (VFS).
+
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
@@ -193,6 +223,7 @@ MyOS/
 ├── test_stage7b.py              # Stage 7B automated test suite
 ├── test_stage8a.py              # Stage 8A automated test suite
 ├── test_stage8b.py              # Stage 8B automated test suite
+├── test_stage9.py               # Stage 9 automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
@@ -233,6 +264,8 @@ MyOS/
         ├── user.c               # User memory mapping, vector 0x80 gate & verification
         ├── syscall.h            # System call numbers, error codes & status block definitions
         ├── syscall.c            # C syscall dispatcher, sys_write, sys_gettime & validation
+        ├── process.h            # Process table, process lifecycle & isolation test interface
+        ├── process.c            # Process management, CR3 allocation, reaping & isolation
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -263,5 +296,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage8b.py
+python3 test_stage9.py
 ```

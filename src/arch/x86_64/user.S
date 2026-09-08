@@ -98,10 +98,19 @@ switch_to_user_mode:
 .type isr_syscall, @function
 
 isr_syscall:
-    /* Check if RAX is SYS_EXIT (0) - terminate user mode session */
+    /* Check if RAX is SYS_EXIT (0) */
     testq %rax, %rax
+    jnz .Ldispatch_syscall
+
+    /* RAX is 0: check if running under a managed process */
+    movabsq $current_process, %rax
+    cmpq $0, (%rax)
     jz isr_user_return
 
+    /* Managed process calling SYS_EXIT: restore RAX = 0 and dispatch */
+    xorq %rax, %rax
+
+.Ldispatch_syscall:
     /* Preserve user general-purpose registers (14 registers = 112 bytes) */
     pushq %rcx
     pushq %rdx
@@ -362,3 +371,107 @@ syscall_msg_end:
     .set syscall_msg_len, syscall_msg_end - syscall_msg
 
 syscall_test_program_end:
+
+/*
+ * proc_test_program_a - Stage 9 Process A Test Routine (Ring 3)
+ *
+ * Executed at CPL 3:
+ *   1. Writes 64-bit magic 0xAAAAAAAA11111111 to VA 0x60001800.
+ *   2. Invokes SYS_GETTIME (syscall 2) and records ticks to VA 0x60001808.
+ *   3. Invokes SYS_WRITE (syscall 1) to announce Process A.
+ *   4. Small computation delay loop.
+ *   5. Invokes SYS_EXIT (syscall 0) with status 42.
+ */
+.global proc_test_program_a
+.global proc_test_program_a_end
+.type proc_test_program_a, @function
+
+proc_test_program_a:
+    /* 1. Store marker to virtual address 0x60001800 */
+    movabsq $0x60001800, %rbx
+    movabsq $0xAAAAAAAA11111111, %rax
+    movq %rax, (%rbx)
+
+    /* 2. Call SYS_GETTIME (syscall 2) and record at 0x60001808 */
+    movq $2, %rax
+    int $0x80
+    movq %rax, 8(%rbx)
+
+    /* 3. Call SYS_WRITE (syscall 1) */
+    movq $1, %rax
+    leaq proc_a_msg(%rip), %rdi
+    movq $proc_a_msg_len, %rsi
+    int $0x80
+
+    /* 4. Small delay loop */
+    movq $1000000, %rcx
+.Lproc_a_delay:
+    decq %rcx
+    jnz .Lproc_a_delay
+
+    /* 5. Call SYS_EXIT (syscall 0) with status 42 */
+    xorq %rax, %rax
+    movq $42, %rdi
+    int $0x80
+
+.Lproc_a_halt:
+    jmp .Lproc_a_halt
+
+proc_a_msg:
+    .ascii "  [Proc A] Isolation test OK\n"
+proc_a_msg_end:
+    .set proc_a_msg_len, proc_a_msg_end - proc_a_msg
+
+proc_test_program_a_end:
+
+/*
+ * proc_test_program_b - Stage 9 Process B Test Routine (Ring 3)
+ *
+ * Executed at CPL 3:
+ *   1. Writes 64-bit magic 0xBBBBBBBB22222222 to the EXACT SAME VA 0x60001800.
+ *   2. Invokes SYS_GETTIME (syscall 2) and records ticks to VA 0x60001808.
+ *   3. Invokes SYS_WRITE (syscall 1) to announce Process B.
+ *   4. Small computation delay loop.
+ *   5. Invokes SYS_EXIT (syscall 0) with status 84.
+ */
+.global proc_test_program_b
+.global proc_test_program_b_end
+.type proc_test_program_b, @function
+
+proc_test_program_b:
+    /* 1. Store marker to the exact same virtual address 0x60001800 */
+    movabsq $0x60001800, %rbx
+    movabsq $0xBBBBBBBB22222222, %rax
+    movq %rax, (%rbx)
+
+    /* 2. Call SYS_GETTIME (syscall 2) and record at 0x60001808 */
+    movq $2, %rax
+    int $0x80
+    movq %rax, 8(%rbx)
+
+    /* 3. Call SYS_WRITE (syscall 1) */
+    movq $1, %rax
+    leaq proc_b_msg(%rip), %rdi
+    movq $proc_b_msg_len, %rsi
+    int $0x80
+
+    /* 4. Small delay loop */
+    movq $1000000, %rcx
+.Lproc_b_delay:
+    decq %rcx
+    jnz .Lproc_b_delay
+
+    /* 5. Call SYS_EXIT (syscall 0) with status 84 */
+    xorq %rax, %rax
+    movq $84, %rdi
+    int $0x80
+
+.Lproc_b_halt:
+    jmp .Lproc_b_halt
+
+proc_b_msg:
+    .ascii "  [Proc B] Isolation test OK\n"
+proc_b_msg_end:
+    .set proc_b_msg_len, proc_b_msg_end - proc_b_msg
+
+proc_test_program_b_end:

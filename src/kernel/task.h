@@ -9,7 +9,7 @@
  * Maximum number of concurrent tasks supported in Stage 7A.
  * Task 0 is reserved for the initial kernel thread (main).
  */
-#define MAX_TASKS          4
+#define MAX_TASKS          8
 #define TASK_STACK_SIZE    4096
 
 /*
@@ -43,6 +43,8 @@ typedef struct task {
     void *arg;                /* Argument passed to entry function */
     uint64_t switch_count;    /* Number of times this task was switched to */
     char name[16];            /* Human-readable label for debugging */
+    uint64_t cr3;             /* Active CR3 for this task (0 = default boot CR3) */
+    void *process;            /* Pointer to owning process_t (or NULL for kernel task) */
 } task_t;
 
 /*
@@ -51,6 +53,7 @@ typedef struct task {
 void task_init(void);
 task_t *task_create(task_entry_t entry, void *arg, const char *name);
 task_t *task_create_coop(task_entry_t entry, void *arg, const char *name);
+task_t *task_create_user(uint64_t user_entry, uint64_t user_rsp, uint64_t cr3, void *proc, const char *name);
 void task_switch_to(task_t *next);
 task_t *task_get_current(void);
 void task_set_current(task_t *t);
