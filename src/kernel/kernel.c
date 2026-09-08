@@ -8,6 +8,7 @@
 #include "multiboot.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "heap.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -26,7 +27,8 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_puts("================================================================\n");
     vga_puts("             MyOS - Educational x86-64 Kernel                   \n");
-    vga_puts("================================================================\n\n");
+    vga_puts("================================================================\n");
+    vga_putc('\n');
 
     /* Stage 1 Checkpoints */
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -67,17 +69,21 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 10. Initialize Physical Memory Manager from Multiboot memory map */
     if (multiboot_magic != MULTIBOOT_BOOTLOADER_MAGIC) {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_puts("[WARN] Non-standard bootloader magic received\n");
+        vga_puts("[WARN] Non-standard bootloader magic\n");
     }
     pmm_init(multiboot_info_addr);
 
     /* 11. Initialize Virtual Memory Manager */
     vmm_init();
 
-    vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
-    vga_puts("Stage 5B Goal Achieved: 4 KiB virtual page mapping active!\n\n");
+    /* 12. Initialize Kernel Heap */
+    heap_init();
 
-    /* 10. Initialize terminal subsystem (prints initial MyOS> prompt) */
+    vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
+    vga_puts("Stage 5B Goal Achieved: 4 KiB virtual page mapping active!\n");
+    vga_puts("Stage 6 Goal Achieved: Dynamic kernel heap allocator active!\n\n");
+
+    /* 13. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();
 
     /* 11. Enable maskable hardware interrupts */

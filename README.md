@@ -59,6 +59,16 @@
   - Shell commands: `vmmap` (virtual memory layout & test region) and `vmtest` (end-to-end PMM -> VMM -> write/read access -> unmap -> free verification).
   - *Note: Stage 5B establishes page mapping infrastructure and does not yet implement user-space memory or processes.*
 
+- **Stage 6: Kernel Heap / Dynamic Memory Allocation**
+  - Fixed-size 64 KiB static kernel heap located at virtual address `0x50000000` (1 GiB + 256 MiB).
+  - Backed by 16 physical 4 KiB frames allocated via PMM and mapped via VMM with cleanup on partial failure.
+  - Singly linked-list free-list allocator using 24-byte aligned metadata headers (`struct heap_block`).
+  - First-fit allocation strategy via `kmalloc(size)` with strict 8-byte payload alignment.
+  - Block splitting when excess space meets header + minimum payload (8 bytes).
+  - Safe deallocation via `kfree(ptr)` with pointer boundary, alignment, and existence validation.
+  - Automatic coalescing of adjacent free blocks (prev+curr, curr+next, prev+curr+next).
+  - Shell commands: `heapinfo` (heap usage, block counts, and fragmentation metrics) and `heaptest` (12-step in-kernel test suite).
+
 ---
 
 ## 2. Directory Structure
@@ -75,6 +85,7 @@ MyOS/
 ├── test_stage4.py               # Stage 4 automated test suite
 ├── test_stage5a.py              # Stage 5A automated test suite
 ├── test_stage5b.py              # Stage 5B automated test suite
+├── test_stage6.py               # Stage 6 automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
@@ -101,6 +112,8 @@ MyOS/
         ├── pmm.c                # 4 KiB frame bitmap allocator & reserved memory tracker
         ├── vmm.h                # Virtual memory manager interface & translation macros
         ├── vmm.c                # 4-level page table walk, mapping & TLB invalidation
+        ├── heap.h               # Kernel heap allocator interface & block headers
+        ├── heap.c               # Free-list allocator, kmalloc/kfree & coalescing
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -131,5 +144,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage5b.py
+python3 test_stage6.py
 ```

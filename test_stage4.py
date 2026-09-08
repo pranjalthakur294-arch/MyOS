@@ -241,17 +241,18 @@ def main():
 
     # Test 6: Shell command regression
     print("\n[TEST 6] Testing Shell Commands Regression (help, about, echo, clear, uptime)...")
-    shell_keys = text_to_sendkeys("clear\nhelp\nabout\necho test\nuptime\n")
-    rows = run_qemu_test(shell_keys, wait_time=0.6, boot_wait=1.2)
-    screen_text = "\n".join(rows)
-    t6_pass = ("Available commands:" in screen_text and
-               "uptime" in screen_text and
-               "Timer: PIT Channel 0" in screen_text and
-               "test" in screen_text and
-               "Uptime:" in screen_text)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.2)
+    text_help = "\n".join(rows_help)
+    rows_other = run_qemu_test(text_to_sendkeys("clear\nabout\necho test\nuptime\n"), wait_time=0.5, boot_wait=1.2)
+    text_other = "\n".join(rows_other)
+    t6_pass = ("Available commands:" in text_help and
+               "uptime" in text_help and
+               "Timer: PIT Channel 0" in text_other and
+               "test" in text_other and
+               "Uptime:" in text_other)
     print("Test 6 (Shell Regression):", "PASS" if t6_pass else "FAIL")
     if t6_pass: passed_count += 1
-    print_screen(rows, "Test 6: Shell Regression")
+    print_screen(rows_other, "Test 6: Shell Regression")
 
     # Test 7: Long-running stability (let timer interrupt fire for 3.0 seconds)
     print("\n[TEST 7] Testing Long-Running Stability (continuous IRQ0 interrupts for 3.0s)...")

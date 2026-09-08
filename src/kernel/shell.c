@@ -3,6 +3,7 @@
 #include "timer.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "heap.h"
 #include <stddef.h>
 
 /*
@@ -48,24 +49,28 @@ static void builtin_alloc(const char *args);
 static void builtin_free(const char *args);
 static void builtin_vmmap(const char *args);
 static void builtin_vmtest(const char *args);
+static void builtin_heapinfo(const char *args);
+static void builtin_heaptest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
  * Static command table terminated with a sentinel {NULL, NULL, NULL}.
  */
 static const struct shell_command commands[] = {
-    {"help",    "Display list of available commands", builtin_help},
-    {"clear",   "Clear the terminal screen",          builtin_clear},
-    {"about",   "Display system information",          builtin_about},
-    {"echo",    "Print arguments to the screen",       builtin_echo},
-    {"uptime",  "Show system uptime",                 builtin_uptime},
-    {"meminfo", "Show physical memory information",   builtin_meminfo},
-    {"alloc",   "Allocate a physical 4 KiB frame",    builtin_alloc},
-    {"free",    "Free the last allocated test frame", builtin_free},
-    {"vmmap",   "Show virtual memory information",    builtin_vmmap},
-    {"vmtest",  "Test 4 KiB virtual page mapping",    builtin_vmtest},
-    {"halt",    "Halt the system (stops the CPU)",     builtin_halt},
-    {NULL,      NULL,                                  NULL}
+    {"help",     "List commands",         builtin_help},
+    {"clear",    "Clear screen",          builtin_clear},
+    {"about",    "System information",    builtin_about},
+    {"echo",     "Print arguments",       builtin_echo},
+    {"uptime",   "System uptime",         builtin_uptime},
+    {"meminfo",  "Physical memory info",  builtin_meminfo},
+    {"alloc",    "Allocate 4 KiB frame",  builtin_alloc},
+    {"free",     "Free test frame",       builtin_free},
+    {"vmmap",    "Virtual memory info",   builtin_vmmap},
+    {"vmtest",   "Test virtual mapping",  builtin_vmtest},
+    {"heapinfo", "Kernel heap info",      builtin_heapinfo},
+    {"heaptest", "Test kernel heap",      builtin_heaptest},
+    {"halt",     "Halt system",           builtin_halt},
+    {NULL,       NULL,                    NULL}
 };
 
 /*
@@ -79,7 +84,7 @@ static void builtin_help(const char *args) {
         vga_puts("  ");
         vga_puts(commands[i].name);
         size_t name_len = kstrlen(commands[i].name);
-        for (size_t s = name_len; s < 8; s++) {
+        for (size_t s = name_len; s < 10; s++) {
             vga_putc(' ');
         }
         vga_puts("- ");
@@ -110,6 +115,7 @@ static void builtin_about(const char *args) {
     vga_puts("Timer: PIT Channel 0 @ 100 Hz (IRQ0 / Vector 0x20)\n");
     vga_puts("Memory: 4 KiB Physical Frame Bitmap Allocator\n");
     vga_puts("VMM: 4 KiB Virtual Page Mapping Active\n");
+    vga_puts("Heap: 64 KiB Free-List Dynamic Allocator\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -319,6 +325,48 @@ static void builtin_vmtest(const char *args) {
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("VMM test passed!\n");
     vga_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+}
+
+/*
+ * Built-in Command: heapinfo
+ * Displays kernel heap location, capacity, allocated and free block statistics.
+ */
+static void builtin_heapinfo(const char *args) {
+    (void)args;
+    heap_stats_t stats;
+    heap_get_stats(&stats);
+
+    const char *bytes_nl = " bytes\n";
+    vga_puts("\nKernel Heap:\n  Start:        ");
+    vga_print_hex(stats.start_addr);
+    vga_puts("\n  Size:         ");
+    vga_print_dec((uint32_t)stats.total_size);
+    vga_puts(bytes_nl);
+    vga_puts("  Used:         ");
+    vga_print_dec((uint32_t)stats.used_bytes);
+    vga_puts(bytes_nl);
+    vga_puts("  Free:         ");
+    vga_print_dec((uint32_t)stats.free_bytes);
+    vga_puts(bytes_nl);
+    vga_puts("  Blocks:       ");
+    vga_print_dec((uint32_t)stats.total_blocks);
+    vga_puts("\n  Free Blocks:  ");
+    vga_print_dec((uint32_t)stats.free_blocks);
+    vga_puts("\n  Used Blocks:  ");
+    vga_print_dec((uint32_t)stats.used_blocks);
+    vga_puts("\n  Largest Free: ");
+    vga_print_dec((uint32_t)stats.largest_free);
+    vga_puts(bytes_nl);
+}
+
+/*
+ * Built-in Command: heaptest
+ * Executes the comprehensive in-kernel heap verification test suite.
+ */
+static void builtin_heaptest(const char *args) {
+    (void)args;
+    vga_putc('\n');
+    heap_run_test();
 }
 
 /*

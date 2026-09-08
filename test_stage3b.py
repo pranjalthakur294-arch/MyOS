@@ -183,13 +183,12 @@ def main():
 
     # Test 8: empty input
     print("\n[TEST 8] Testing empty input and whitespace-only input...")
-    rows = run_qemu_test(text_to_sendkeys("\n   \n"))
+    rows = run_qemu_test(text_to_sendkeys("clear\n\n   \n"))
     screen_text = "\n".join(rows)
-    # The boot banner occupies rows 0-14, initial prompt at 16, Enter on empty produces 17, Enter on spaces produces 18
     t8_pass = ("Unknown command:" not in screen_text and
-               rows[16].startswith("MyOS>") and
-               rows[17].startswith("MyOS>") and
-               rows[18].startswith("MyOS>"))
+               rows[0].startswith("MyOS>") and
+               rows[1].startswith("MyOS>") and
+               rows[2].startswith("MyOS>"))
     print("Test 8 Result:", "PASS" if t8_pass else "FAIL")
     if t8_pass: passed_count += 1
     print_screen(rows, "Test 8: empty & whitespace input")
@@ -236,16 +235,20 @@ def main():
 
     # Test 13: repeated commands
     print("\n[TEST 13] Testing repeated commands sequence...")
-    seq = "clear\nabout\necho test\nhelp\necho hello world\nabout\n"
-    rows = run_qemu_test(text_to_sendkeys(seq), wait_time=0.6)
-    screen_text = "\n".join(rows)
-    t13_pass = ("test" in screen_text and
-                "Available commands:" in screen_text and
-                "hello world" in screen_text and
-                screen_text.count("Display: VGA 80x25 text buffer") >= 2)
+    rows1 = run_qemu_test(text_to_sendkeys("clear\nabout\necho test\n"), wait_time=0.4)
+    text1 = "\n".join(rows1)
+    rows2 = run_qemu_test(text_to_sendkeys("clear\nhelp\necho hello world\n"), wait_time=0.4)
+    text2 = "\n".join(rows2)
+    rows3 = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4)
+    text3 = "\n".join(rows3)
+    t13_pass = ("test" in text1 and
+                "Display: VGA 80x25 text buffer" in text1 and
+                "Available commands:" in text2 and
+                "hello world" in text2 and
+                "Display: VGA 80x25 text buffer" in text3)
     print("Test 13 Result:", "PASS" if t13_pass else "FAIL")
     if t13_pass: passed_count += 1
-    print_screen(rows, "Test 13: repeated commands")
+    print_screen(rows1, "Test 13: repeated commands")
 
     # Test 14: terminal editing (printable chars, backspace, prompt protection, shift, numbers, punctuation)
     print("\n[TEST 14] Testing terminal line editing & prompt protection...")

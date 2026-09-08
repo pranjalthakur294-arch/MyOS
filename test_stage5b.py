@@ -250,19 +250,22 @@ def main():
 
     # Test 14: Existing shell commands continue working
     print("\n[TEST 14] Testing Shell Commands Regression...")
-    rows = run_qemu_test(text_to_sendkeys("clear\nhelp\nabout\n"), wait_time=0.5, boot_wait=1.2)
-    screen_text = "\n".join(rows)
-    t14_pass = ("Available commands:" in screen_text and
-                "vmmap" in screen_text and
-                "vmtest" in screen_text and
-                "meminfo" in screen_text and
-                "alloc" in screen_text and
-                "free" in screen_text and
-                "uptime" in screen_text and
-                "VMM: 4 KiB Virtual Page Mapping Active" in screen_text)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.2)
+    text_help = "\n".join(rows_help)
+    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.2)
+    text_about = "\n".join(rows_about)
+
+    t14_pass = ("Available commands:" in text_help and
+                "vmmap" in text_help and
+                "vmtest" in text_help and
+                "meminfo" in text_help and
+                "alloc" in text_help and
+                "free" in text_help and
+                "uptime" in text_help and
+                "VMM: 4 KiB Virtual Page Mapping Active" in text_about)
     print("Test 14 (Shell Commands Regression):", "PASS" if t14_pass else "FAIL")
     if t14_pass: passed_count += 1
-    print_screen(rows, "Test 14: Shell Help & About")
+    print_screen(rows_about, "Test 14: Shell About")
 
     # Test 15: Long-Running Stability under continuous interrupts
     print("\n[TEST 15] Testing Long-Running Stability (2.5s with interrupts, then vmtest)...")
