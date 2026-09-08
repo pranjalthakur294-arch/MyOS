@@ -4,6 +4,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "heap.h"
+#include "task.h"
 #include <stddef.h>
 
 /*
@@ -51,6 +52,8 @@ static void builtin_vmmap(const char *args);
 static void builtin_vmtest(const char *args);
 static void builtin_heapinfo(const char *args);
 static void builtin_heaptest(const char *args);
+static void builtin_tasks(const char *args);
+static void builtin_tasktest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -69,6 +72,8 @@ static const struct shell_command commands[] = {
     {"vmtest",   "Test virtual mapping",  builtin_vmtest},
     {"heapinfo", "Kernel heap info",      builtin_heapinfo},
     {"heaptest", "Test kernel heap",      builtin_heaptest},
+    {"tasks",    "Kernel tasks list",     builtin_tasks},
+    {"tasktest", "Test task switching",   builtin_tasktest},
     {"halt",     "Halt system",           builtin_halt},
     {NULL,       NULL,                    NULL}
 };
@@ -116,6 +121,7 @@ static void builtin_about(const char *args) {
     vga_puts("Memory: 4 KiB Physical Frame Bitmap Allocator\n");
     vga_puts("VMM: 4 KiB Virtual Page Mapping Active\n");
     vga_puts("Heap: 64 KiB Free-List Dynamic Allocator\n");
+    vga_puts("Tasks: Cooperative Context Switching Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -367,6 +373,25 @@ static void builtin_heaptest(const char *args) {
     (void)args;
     vga_putc('\n');
     heap_run_test();
+}
+
+/*
+ * Built-in Command: tasks
+ * Displays the current kernel task list and execution states.
+ */
+static void builtin_tasks(const char *args) {
+    (void)args;
+    task_print_list();
+}
+
+/*
+ * Built-in Command: tasktest
+ * Executes the manual cooperative context switching verification routine.
+ */
+static void builtin_tasktest(const char *args) {
+    (void)args;
+    vga_putc('\n');
+    task_run_demo();
 }
 
 /*

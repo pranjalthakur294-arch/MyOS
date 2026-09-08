@@ -9,6 +9,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "heap.h"
+#include "task.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -28,16 +29,10 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     vga_puts("================================================================\n");
     vga_puts("             MyOS - Educational x86-64 Kernel                   \n");
     vga_puts("================================================================\n");
-    vga_putc('\n');
 
-    /* Stage 1 Checkpoints */
+    /* Stage 1 Checkpoint */
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_puts("[OK] Multiboot bootloader handoff completed\n");
-    vga_puts("[OK] Switched from 32-bit Protected Mode to 64-bit Long Mode\n");
-    vga_puts("[OK] 4-level paging initialized (1 GiB identity-mapped)\n");
-    vga_puts("[OK] 64-bit Global Descriptor Table (GDT64) loaded\n");
-    vga_puts("[OK] 16 KiB 64-bit kernel stack established\n");
-    vga_puts("[OK] Transferred execution to C kernel_main()\n\n");
+    vga_puts("[OK] Long Mode & 64-bit kernel initialized\n");
 
     /* 2. Initialize IDT */
     idt_init();
@@ -61,7 +56,7 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
 
     /* 8. Initialize keyboard subsystem (unmasks IRQ1 on Master PIC) */
     keyboard_init();
-    vga_puts("[OK] PS/2 keyboard initialized on IRQ1 (vector 0x21)\n\n");
+    vga_puts("[OK] PS/2 keyboard initialized on IRQ1 (vector 0x21)\n");
 
     /* 9. Initialize shell subsystem */
     shell_init();
@@ -79,17 +74,24 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 12. Initialize Kernel Heap */
     heap_init();
 
+    /* 13. Initialize Kernel Task Subsystem */
+    task_init();
+
+    /* 14. Run Manual Cooperative Context Switch Demonstration */
+    task_run_demo();
+
     vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
     vga_puts("Stage 5B Goal Achieved: 4 KiB virtual page mapping active!\n");
-    vga_puts("Stage 6 Goal Achieved: Dynamic kernel heap allocator active!\n\n");
+    vga_puts("Stage 6 Goal Achieved: Dynamic kernel heap allocator active!\n");
+    vga_puts("Stage 7A Goal Achieved: Manual context switching active!\n");
 
-    /* 13. Initialize terminal subsystem (prints initial MyOS> prompt) */
+    /* 15. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();
 
-    /* 11. Enable maskable hardware interrupts */
+    /* 16. Enable maskable hardware interrupts */
     __asm__ volatile ("sti");
 
-    /* 12. Halt loop: Put CPU into low-power halt state waiting for interrupts */
+    /* 17. Halt loop: Put CPU into low-power halt state waiting for interrupts */
     while (1) {
         __asm__ volatile ("hlt");
     }

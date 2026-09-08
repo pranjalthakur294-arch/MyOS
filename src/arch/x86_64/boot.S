@@ -271,6 +271,8 @@ pd_table:
     .skip 4096                  /* 4 KiB Page Directory table */
 
 .align 16
+.global stack_bottom
+.global stack_top
 stack_bottom:
     .skip 16384                 /* 16 KiB initial kernel stack */
 stack_top:

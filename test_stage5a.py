@@ -52,7 +52,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.2):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.4):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -244,7 +244,7 @@ def main():
     # Test 8: Multiple allocations return distinct, aligned addresses
     print("\n[TEST 8] Verifying multiple allocations and frees...")
     keys = text_to_sendkeys("clear\nalloc\nalloc\nalloc\nalloc\nalloc\n")
-    rows = run_qemu_test(keys, wait_time=0.6, boot_wait=1.2)
+    rows = run_qemu_test(keys, wait_time=0.6, boot_wait=1.4)
     screen_text = "\n".join(rows)
     addrs = parse_alloc_hex(screen_text)
 

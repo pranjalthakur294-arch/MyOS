@@ -69,6 +69,43 @@
   - Automatic coalescing of adjacent free blocks (prev+curr, curr+next, prev+curr+next).
   - Shell commands: `heapinfo` (heap usage, block counts, and fragmentation metrics) and `heaptest` (12-step in-kernel test suite).
 
+- **Stage 7A: Kernel Task Infrastructure & Manual Context Switching**
+  - Task Control Block (TCB) infrastructure managing up to 4 concurrent kernel tasks (`task_t`).
+  - Task states: `TASK_UNUSED`, `TASK_READY`, `TASK_RUNNING`, `TASK_FINISHED`.
+  - Task 0 (`main`) encapsulates the initial boot execution thread using the pre-allocated kernel stack (`0x10B000`).
+  - Dynamic kernel task stack allocation via `kmalloc(4096)` with 16-byte System V ABI alignment.
+  - Low-level assembly context switch (`context_switch.S`) preserving callee-saved registers (`%rbx`, `%rbp`, `%r12..%r15`), `RFLAGS` via `pushfq`/`popfq`, and `%rsp`.
+  - Task bootstrap trampoline (`task_bootstrap`) executing task entry point and cleanly transitioning to `task_exit()` upon completion.
+  - Cooperative context switching demonstration during boot interleaving Task A and Task B execution before returning cleanly to Task 0 (main shell).
+  - Automatic slot recycling and stack deallocation on reuse.
+  - Shell commands: `tasks` (display task IDs, names, states, and stack bases) and `tasktest` (re-run cooperative context switching demonstration).
+  - *Note: Stage 7A establishes cooperative kernel-mode multitasking and does not implement timer preemption, priority scheduling, or user mode (Ring 3).*
+
+```text
+Task Control Block (TCB) & Context Switch Architecture:
+
+  +-----------------------+              +-----------------------+
+  |  Task 0 (PID 0, main) |              |  Task 1 (PID 1, A)    |
+  |  State: RUNNING       |              |  State: READY         |
+  |  rsp: 0x10Axxx        |              |  rsp: 0x50000Fxx      |
+  |  stack_base: 0x10B000 |              |  stack_base: kmalloc  |
+  +-----------------------+              +-----------------------+
+              |                                      ^
+              | task_switch_to(task0, task1)         |
+              v                                      |
+       +-------------------------------------------------+
+       | context_switch(uint64_t **old_rsp, uint64_t *new_rsp) |
+       |                                                 |
+       | 1. pushfq                                       |
+       | 2. pushq %rbx, %rbp, %r12, %r13, %r14, %r15     |
+       | 3. movq %rsp, (%rdi)    <-- save old rsp        |
+       | 4. movq %rsi, %rsp      <-- switch to new rsp   |
+       | 5. popq %r15, %r14, %r13, %r12, %rbp, %rbx      |
+       | 6. popfq                                        |
+       | 7. ret                  <-- resume/start task   |
+       +-------------------------------------------------+
+```
+
 ---
 
 ## 2. Directory Structure
@@ -86,11 +123,13 @@ MyOS/
 ├── test_stage5a.py              # Stage 5A automated test suite
 ├── test_stage5b.py              # Stage 5B automated test suite
 ├── test_stage6.py               # Stage 6 automated test suite
+├── test_stage7a.py              # Stage 7A automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
     │       ├── boot.S           # Multiboot headers & 32-bit to 64-bit transition
-    │       └── interrupts.S     # Low-level 64-bit ISR stubs (timer, keyboard, #PF)
+    │       ├── interrupts.S     # Low-level 64-bit ISR stubs (timer, keyboard, #PF)
+    │       └── context_switch.S # Cooperative assembly context switch routine
     └── kernel/
         ├── io.h                 # Port I/O inline assembly (inb, outb, io_wait)
         ├── vga.h                # VGA text mode interface (colors, print_dec, print_hex)
@@ -114,6 +153,8 @@ MyOS/
         ├── vmm.c                # 4-level page table walk, mapping & TLB invalidation
         ├── heap.h               # Kernel heap allocator interface & block headers
         ├── heap.c               # Free-list allocator, kmalloc/kfree & coalescing
+        ├── task.h               # Kernel task subsystem, TCB & task states
+        ├── task.c               # Task management, cooperative switching & demo
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -144,5 +185,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage6.py
+python3 test_stage7a.py
 ```

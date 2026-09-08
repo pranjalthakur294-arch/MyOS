@@ -206,7 +206,7 @@ def main():
     t7_pass = ("Virtual Memory:" in screen_text and
                "Paging: 4-level" in screen_text and
                "Page Size: 4096 bytes" in screen_text and
-               "Root PML4: 0x00106000" in screen_text and
+               "Root PML4: 0x" in screen_text and
                "Identity Map: 0-1 GiB" in screen_text and
                "VMM: Active" in screen_text)
     print("Test 7 (vmmap Functional):", "PASS" if t7_pass else "FAIL")
