@@ -202,6 +202,13 @@ setup_page_tables:
  * ------------------------------------------------------------------------- */
 .code64
 long_mode_start:
+    /* Pass Multiboot arguments to kernel_main per System V AMD64 ABI:
+     * %rdi (1st parameter) = Multiboot magic (zero-extended from %eax)
+     * %rsi (2nd parameter) = Multiboot information address (zero-extended from %ebx)
+     */
+    movl %eax, %edi
+    movl %ebx, %esi
+
     /* Reload all data segment registers with 64-bit data segment selector (0x10) */
     movw $0x10, %ax
     movw %ax, %ds
@@ -217,7 +224,7 @@ long_mode_start:
     pushq $0
     popfq
 
-    /* Call the C kernel entry point */
+    /* Call the C kernel entry point: kernel_main(magic, mbi_addr) */
     call kernel_main
 
     /* Safety halt loop if kernel_main ever returns */

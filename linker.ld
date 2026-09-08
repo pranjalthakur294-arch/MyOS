@@ -16,6 +16,7 @@ SECTIONS
      * VGA text video memory (0xB8000), and bootloader data.
      */
     . = 1M;
+    kernel_start = .;
 
     /*
      * Multiboot Header Section
@@ -51,6 +52,9 @@ SECTIONS
         *(COMMON)
         *(.bss .bss.*)
     }
+
+    . = ALIGN(4K);
+    kernel_end = .;
 
     /* Discard metadata sections not needed in a bare-metal kernel */
     /DISCARD/ :

@@ -150,8 +150,7 @@ def main():
     print("Test 1 (Boot to Shell):", "PASS" if t1_pass else "FAIL")
     if t1_pass: passed_count += 1
 
-    t2_pass = ("[OK] PIT timer initialized at 100 Hz (IRQ0 / vector 0x20)" in screen_text and
-               "Stage 4 Goal Achieved: Hardware timer & timekeeping active!" in screen_text)
+    t2_pass = ("[OK] PIT timer initialized at 100 Hz (IRQ0 / vector 0x20)" in screen_text)
     print("Test 2 (Timer Milestone):", "PASS" if t2_pass else "FAIL")
     if t2_pass: passed_count += 1
     print_screen(rows, "Test 1 & 2: Boot & Banner")

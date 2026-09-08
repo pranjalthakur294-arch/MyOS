@@ -5,6 +5,8 @@
 #include "terminal.h"
 #include "shell.h"
 #include "timer.h"
+#include "multiboot.h"
+#include "pmm.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -12,8 +14,9 @@ extern void isr_keyboard(void);
 
 /*
  * kernel_main - C entry point of MyOS
+ * Receives Multiboot magic in RDI and Multiboot information pointer in RSI.
  */
-void kernel_main(void) {
+void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 1. Initialize the 80x25 VGA text-mode display buffer */
     vga_init();
 
@@ -56,16 +59,23 @@ void kernel_main(void) {
     /* 8. Initialize shell subsystem */
     shell_init();
 
-    vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
-    vga_puts("Stage 4 Goal Achieved: Hardware timer & timekeeping active!\n\n");
+    /* 9. Initialize Physical Memory Manager from Multiboot memory map */
+    if (multiboot_magic != MULTIBOOT_BOOTLOADER_MAGIC) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[WARN] Non-standard bootloader magic received\n");
+    }
+    pmm_init(multiboot_info_addr);
 
-    /* 9. Initialize terminal subsystem (prints initial MyOS> prompt) */
+    vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
+    vga_puts("Stage 5A Goal Achieved: 4 KiB frame allocator active!\n\n");
+
+    /* 10. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();
 
-    /* 10. Enable maskable hardware interrupts */
+    /* 11. Enable maskable hardware interrupts */
     __asm__ volatile ("sti");
 
-    /* 11. Halt loop: Put CPU into low-power halt state waiting for interrupts */
+    /* 12. Halt loop: Put CPU into low-power halt state waiting for interrupts */
     while (1) {
         __asm__ volatile ("hlt");
     }

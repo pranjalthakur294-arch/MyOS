@@ -41,6 +41,14 @@
   - Freestanding 64-bit decimal integer printer (`vga_print_dec()`).
   - Shell command `uptime` reporting elapsed seconds and raw tick count.
 
+- **Stage 5A: Physical Memory Manager / 4 KiB Frame Allocator**
+  - Multiboot 1 memory map parser discovering usable physical RAM regions.
+  - Compact static frame bitmap in BSS tracking 4 KiB frames up to 1 GiB.
+  - Automatic reservation of critical memory (low 1 MiB, IVT/BDA, VGA at `0xB8000`, kernel image boundaries, boot stack, page tables, bitmap, Multiboot structures).
+  - Physical frame allocation (`pmm_alloc_frame`) and deallocation (`pmm_free_frame`) with frame 0 reservation.
+  - Freestanding 64-bit hexadecimal address printer (`vga_print_hex()`).
+  - Shell commands: `meminfo` (memory accounting), `alloc` (frame allocation), `free` (frame deallocation).
+
 ---
 
 ## 2. Directory Structure
@@ -48,13 +56,14 @@
 ```text
 MyOS/
 ├── Makefile                     # Cross-compilation build system
-├── linker.ld                    # Linker script (kernel loaded at 1 MiB physical)
+├── linker.ld                    # Linker script (places kernel at 1 MiB physical)
 ├── grub.cfg                     # GRUB2 configuration for bootable ISO creation
 ├── README.md                    # Project documentation
 ├── test_keyboard.py             # Stage 2B automated test suite
 ├── test_stage3a.py              # Stage 3A automated test suite
 ├── test_stage3b.py              # Stage 3B automated test suite
 ├── test_stage4.py               # Stage 4 automated test suite
+├── test_stage5a.py              # Stage 5A automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
@@ -62,7 +71,7 @@ MyOS/
     │       └── interrupts.S     # Low-level 64-bit ISR stubs (timer, keyboard)
     └── kernel/
         ├── io.h                 # Port I/O inline assembly (inb, outb, io_wait)
-        ├── vga.h                # VGA text mode interface (colors, print_dec, puts)
+        ├── vga.h                # VGA text mode interface (colors, print_dec, print_hex)
         ├── vga.c                # VGA driver implementation
         ├── idt.h                # IDT descriptor structures & vector definitions
         ├── idt.c                # IDT table & lidt loading
@@ -76,6 +85,9 @@ MyOS/
         ├── shell.c              # Shell dispatch table & built-in commands
         ├── timer.h              # PIT hardware timer interface & constants
         ├── timer.c              # PIT channel 0 driver & 64-bit tick counter
+        ├── multiboot.h          # Multiboot 1 specifications and memory map structures
+        ├── pmm.h                # Physical memory manager interface & frame constants
+        ├── pmm.c                # 4 KiB frame bitmap allocator & reserved memory tracker
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -106,5 +118,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage4.py
+python3 test_stage5a.py
 ```

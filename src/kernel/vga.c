@@ -124,3 +124,22 @@ void vga_print_dec(uint64_t val) {
     }
 }
 
+/*
+ * vga_print_hex - Freestanding 64-bit hexadecimal printer.
+ * Formats value as a prefixed hexadecimal address (e.g. 0x00400000).
+ */
+void vga_print_hex(uint64_t val) {
+    vga_puts("0x");
+    const char hex_chars[] = "0123456789ABCDEF";
+    char buf[17];
+    int digits = (val > 0xFFFFFFFFULL) ? 16 : 8;
+
+    for (int i = digits - 1; i >= 0; i--) {
+        buf[i] = hex_chars[val & 0xF];
+        val >>= 4;
+    }
+    buf[digits] = '\0';
+    vga_puts(buf);
+}
+
+

@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "vga.h"
 #include "timer.h"
+#include "pmm.h"
 #include <stddef.h>
 
 /*
@@ -41,19 +42,25 @@ static void builtin_clear(const char *args);
 static void builtin_about(const char *args);
 static void builtin_echo(const char *args);
 static void builtin_uptime(const char *args);
+static void builtin_meminfo(const char *args);
+static void builtin_alloc(const char *args);
+static void builtin_free(const char *args);
 static void builtin_halt(const char *args);
 
 /*
  * Static command table terminated with a sentinel {NULL, NULL, NULL}.
  */
 static const struct shell_command commands[] = {
-    {"help",   "Display list of available commands", builtin_help},
-    {"clear",  "Clear the terminal screen",          builtin_clear},
-    {"about",  "Display system information",          builtin_about},
-    {"echo",   "Print arguments to the screen",       builtin_echo},
-    {"uptime", "Show system uptime",                 builtin_uptime},
-    {"halt",   "Halt the system (stops the CPU)",     builtin_halt},
-    {NULL,     NULL,                                  NULL}
+    {"help",    "Display list of available commands", builtin_help},
+    {"clear",   "Clear the terminal screen",          builtin_clear},
+    {"about",   "Display system information",          builtin_about},
+    {"echo",    "Print arguments to the screen",       builtin_echo},
+    {"uptime",  "Show system uptime",                 builtin_uptime},
+    {"meminfo", "Show physical memory information",   builtin_meminfo},
+    {"alloc",   "Allocate a physical 4 KiB frame",    builtin_alloc},
+    {"free",    "Free the last allocated test frame", builtin_free},
+    {"halt",    "Halt the system (stops the CPU)",     builtin_halt},
+    {NULL,      NULL,                                  NULL}
 };
 
 /*
@@ -67,7 +74,7 @@ static void builtin_help(const char *args) {
         vga_puts("  ");
         vga_puts(commands[i].name);
         size_t name_len = kstrlen(commands[i].name);
-        for (size_t s = name_len; s < 7; s++) {
+        for (size_t s = name_len; s < 8; s++) {
             vga_putc(' ');
         }
         vga_puts("- ");
@@ -96,6 +103,7 @@ static void builtin_about(const char *args) {
     vga_puts("Paging: 4-level identity paging\n");
     vga_puts("Interrupts: 8259 PIC + 256-entry IDT\n");
     vga_puts("Timer: PIT Channel 0 @ 100 Hz (IRQ0 / Vector 0x20)\n");
+    vga_puts("Memory: 4 KiB Physical Frame Bitmap Allocator\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -112,6 +120,83 @@ static void builtin_uptime(const char *args) {
     vga_print_dec(seconds);
     vga_puts(" seconds\nTicks: ");
     vga_print_dec(ticks);
+    vga_putc('\n');
+}
+
+/*
+ * Built-in Command: meminfo
+ * Displays physical memory totals, used, free, and frame size.
+ */
+static void builtin_meminfo(const char *args) {
+    (void)args;
+    uint64_t total = pmm_get_total_memory();
+    uint64_t used = pmm_get_used_memory();
+    uint64_t free = pmm_get_free_memory();
+
+    vga_puts("\nPhysical Memory:\n");
+    vga_puts("  Total: ");
+    vga_print_dec(total / (1024 * 1024));
+    vga_puts(" MB (");
+    vga_print_dec(total);
+    vga_puts(" bytes)\n");
+
+    vga_puts("  Used:  ");
+    vga_print_dec(used / (1024 * 1024));
+    vga_puts(" MB (");
+    vga_print_dec(used);
+    vga_puts(" bytes)\n");
+
+    vga_puts("  Free:  ");
+    vga_print_dec(free / (1024 * 1024));
+    vga_puts(" MB (");
+    vga_print_dec(free);
+    vga_puts(" bytes)\n");
+
+    vga_puts("  Frame Size: 4096 bytes\n");
+}
+
+/*
+ * Demonstration allocation tracking for alloc and free commands
+ */
+#define MAX_SHELL_TEST_ALLOCS 32
+static uint64_t shell_test_frames[MAX_SHELL_TEST_ALLOCS];
+static int shell_test_count = 0;
+
+/*
+ * Built-in Command: alloc
+ * Allocates a single 4 KiB physical frame and prints its physical address.
+ */
+static void builtin_alloc(const char *args) {
+    (void)args;
+    if (shell_test_count >= MAX_SHELL_TEST_ALLOCS) {
+        vga_puts("Maximum test allocations reached.\n");
+        return;
+    }
+    uint64_t frame = pmm_alloc_frame();
+    if (frame == 0) {
+        vga_puts("No free physical frames available.\n");
+        return;
+    }
+    shell_test_frames[shell_test_count++] = frame;
+    vga_puts("Allocated frame: ");
+    vga_print_hex(frame);
+    vga_putc('\n');
+}
+
+/*
+ * Built-in Command: free
+ * Frees the last allocated test frame and updates accounting.
+ */
+static void builtin_free(const char *args) {
+    (void)args;
+    if (shell_test_count == 0) {
+        vga_puts("No test frame is currently allocated.\n");
+        return;
+    }
+    uint64_t frame = shell_test_frames[--shell_test_count];
+    pmm_free_frame(frame);
+    vga_puts("Freed frame: ");
+    vga_print_hex(frame);
     vga_putc('\n');
 }
 
