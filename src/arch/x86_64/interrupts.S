@@ -114,3 +114,70 @@ isr_keyboard:
     popq %rax
 
     iretq
+
+.global isr_page_fault
+.type isr_page_fault, @function
+
+/* External C handler defined in idt.c */
+.extern page_fault_handler
+
+isr_page_fault:
+    /*
+     * For #PF (vector 14), the CPU automatically pushes:
+     *   [SS], [RSP], [RFLAGS], [CS], [RIP], [Error Code] (48 bytes)
+     *
+     * We push 15 general-purpose registers (120 bytes).
+     * Total stack delta so far: 48 + 120 = 168 bytes (168 % 16 == 8).
+     * We subtract 8 bytes to ensure 16-byte stack alignment before the call.
+     */
+    pushq %rax
+    pushq %rcx
+    pushq %rdx
+    pushq %rbx
+    pushq %rbp
+    pushq %rsi
+    pushq %rdi
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    subq $8, %rsp
+
+    /* Read CR2 into RDI (1st parameter: faulting linear address) */
+    movq %cr2, %rdi
+
+    /* Error code is at 128(%rsp) (120 bytes GPRs + 8 bytes padding) */
+    movq 128(%rsp), %rsi
+
+    cld
+    call page_fault_handler
+
+    /* Remove alignment padding */
+    addq $8, %rsp
+
+    /* Restore general-purpose registers */
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rdi
+    popq %rsi
+    popq %rbp
+    popq %rbx
+    popq %rdx
+    popq %rcx
+    popq %rax
+
+    /* Pop CPU-pushed error code before returning */
+    addq $8, %rsp
+
+    iretq

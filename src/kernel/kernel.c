@@ -7,10 +7,12 @@
 #include "timer.h"
 #include "multiboot.h"
 #include "pmm.h"
+#include "vmm.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
 extern void isr_keyboard(void);
+extern void isr_page_fault(void);
 
 /*
  * kernel_main - C entry point of MyOS
@@ -38,36 +40,42 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 2. Initialize IDT */
     idt_init();
 
-    /* 3. Initialize & remap PIC (all IRQs masked initially) */
+    /* 3. Install Page Fault exception handler on vector 14 (#PF) */
+    idt_set_gate(IDT_PAGE_FAULT_VECTOR, isr_page_fault, 0x08, IDT_FLAG_INTERRUPT_GATE);
+
+    /* 4. Initialize & remap PIC (all IRQs masked initially) */
     pic_init();
 
-    /* 4. Install timer ISR on vector 0x20 (IRQ0) */
+    /* 5. Install timer ISR on vector 0x20 (IRQ0) */
     idt_set_gate(IDT_TIMER_VECTOR, isr_timer, 0x08, IDT_FLAG_INTERRUPT_GATE);
 
-    /* 5. Install keyboard ISR on vector 0x21 (IRQ1) */
+    /* 6. Install keyboard ISR on vector 0x21 (IRQ1) */
     idt_set_gate(IDT_KEYBOARD_VECTOR, isr_keyboard, 0x08, IDT_FLAG_INTERRUPT_GATE);
 
-    /* 6. Initialize PIT timer subsystem (configures Mode 3 @ 100 Hz, unmasks IRQ0) */
+    /* 7. Initialize PIT timer subsystem (configures Mode 3 @ 100 Hz, unmasks IRQ0) */
     timer_init();
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("[OK] PIT timer initialized at 100 Hz (IRQ0 / vector 0x20)\n");
 
-    /* 7. Initialize keyboard subsystem (unmasks IRQ1 on Master PIC) */
+    /* 8. Initialize keyboard subsystem (unmasks IRQ1 on Master PIC) */
     keyboard_init();
     vga_puts("[OK] PS/2 keyboard initialized on IRQ1 (vector 0x21)\n\n");
 
-    /* 8. Initialize shell subsystem */
+    /* 9. Initialize shell subsystem */
     shell_init();
 
-    /* 9. Initialize Physical Memory Manager from Multiboot memory map */
+    /* 10. Initialize Physical Memory Manager from Multiboot memory map */
     if (multiboot_magic != MULTIBOOT_BOOTLOADER_MAGIC) {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
         vga_puts("[WARN] Non-standard bootloader magic received\n");
     }
     pmm_init(multiboot_info_addr);
 
+    /* 11. Initialize Virtual Memory Manager */
+    vmm_init();
+
     vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
-    vga_puts("Stage 5A Goal Achieved: 4 KiB frame allocator active!\n\n");
+    vga_puts("Stage 5B Goal Achieved: 4 KiB virtual page mapping active!\n\n");
 
     /* 10. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();

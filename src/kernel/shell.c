@@ -2,6 +2,7 @@
 #include "vga.h"
 #include "timer.h"
 #include "pmm.h"
+#include "vmm.h"
 #include <stddef.h>
 
 /*
@@ -45,6 +46,8 @@ static void builtin_uptime(const char *args);
 static void builtin_meminfo(const char *args);
 static void builtin_alloc(const char *args);
 static void builtin_free(const char *args);
+static void builtin_vmmap(const char *args);
+static void builtin_vmtest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -59,6 +62,8 @@ static const struct shell_command commands[] = {
     {"meminfo", "Show physical memory information",   builtin_meminfo},
     {"alloc",   "Allocate a physical 4 KiB frame",    builtin_alloc},
     {"free",    "Free the last allocated test frame", builtin_free},
+    {"vmmap",   "Show virtual memory information",    builtin_vmmap},
+    {"vmtest",  "Test 4 KiB virtual page mapping",    builtin_vmtest},
     {"halt",    "Halt the system (stops the CPU)",     builtin_halt},
     {NULL,      NULL,                                  NULL}
 };
@@ -104,6 +109,7 @@ static void builtin_about(const char *args) {
     vga_puts("Interrupts: 8259 PIC + 256-entry IDT\n");
     vga_puts("Timer: PIT Channel 0 @ 100 Hz (IRQ0 / Vector 0x20)\n");
     vga_puts("Memory: 4 KiB Physical Frame Bitmap Allocator\n");
+    vga_puts("VMM: 4 KiB Virtual Page Mapping Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -198,6 +204,121 @@ static void builtin_free(const char *args) {
     vga_puts("Freed frame: ");
     vga_print_hex(frame);
     vga_putc('\n');
+}
+
+/*
+ * Built-in Command: vmmap
+ * Displays current virtual memory architecture, active PML4 root, and VMM test range.
+ */
+static void builtin_vmmap(const char *args) {
+    (void)args;
+    uint64_t cr3 = vmm_read_cr3();
+    uint64_t test_phys = 0;
+    int mapped = vmm_get_mapping(VMM_TEST_VIRTUAL_ADDRESS, &test_phys);
+
+    vga_puts("\nVirtual Memory:\n");
+    vga_puts("  Paging: 4-level\n");
+    vga_puts("  Page Size: 4096 bytes\n");
+    vga_puts("  Root PML4: ");
+    vga_print_hex(cr3 & PTE_ADDR_MASK);
+    vga_puts("\n  Identity Map: 0-1 GiB\n");
+    vga_puts("  VMM: Active\n");
+    vga_puts("  Test Region: ");
+    vga_print_hex(VMM_MANAGED_START);
+    vga_puts("\n  Test Mapping: ");
+    if (mapped == 0) {
+        vga_puts("Mapped -> ");
+        vga_print_hex(test_phys);
+    } else {
+        vga_puts("Unmapped");
+    }
+    vga_putc('\n');
+}
+
+/*
+ * Built-in Command: vmtest
+ * Performs an end-to-end 4 KiB virtual page mapping test:
+ *   1. Allocates physical frame via PMM
+ *   2. Maps to VMM_TEST_VIRTUAL_ADDRESS (0x40000000)
+ *   3. Verifies mapping via vmm_get_mapping()
+ *   4. Writes and reads back test pattern through virtual address
+ *   5. Cross-verifies through physical identity address
+ *   6. Unmaps virtual page and flushes TLB
+ *   7. Releases physical frame back to PMM
+ */
+static void builtin_vmtest(const char *args) {
+    (void)args;
+    vga_puts("\nVMM Test:\n");
+
+    /* 1. Allocate physical frame */
+    uint64_t phys_frame = pmm_alloc_frame();
+    if (phys_frame == 0) {
+        vga_puts("  [FAIL] Physical frame allocation failed.\n");
+        return;
+    }
+    vga_puts("  Physical frame: ");
+    vga_print_hex(phys_frame);
+    vga_puts("\n  Virtual address: ");
+    vga_print_hex(VMM_TEST_VIRTUAL_ADDRESS);
+    vga_putc('\n');
+
+    /* 2. Map virtual address */
+    int map_res = vmm_map_page(VMM_TEST_VIRTUAL_ADDRESS, phys_frame, PTE_PRESENT | PTE_WRITABLE);
+    if (map_res != 0) {
+        vga_puts("  [FAIL] Mapping failed with error ");
+        vga_print_dec((uint64_t)(-map_res));
+        vga_putc('\n');
+        pmm_free_frame(phys_frame);
+        return;
+    }
+
+    /* 3. Verify mapping query */
+    uint64_t resolved = 0;
+    if (vmm_get_mapping(VMM_TEST_VIRTUAL_ADDRESS, &resolved) != 0 || resolved != phys_frame) {
+        vga_puts("  [FAIL] Mapping verification failed.\n");
+        vmm_unmap_page(VMM_TEST_VIRTUAL_ADDRESS);
+        pmm_free_frame(phys_frame);
+        return;
+    }
+    vga_puts("  Mapping: OK\n");
+
+    /* 4. Write & Read Test Pattern */
+    const uint64_t TEST_VAL = 0xCAFEBABE12345678ULL;
+    volatile uint64_t *vptr = (volatile uint64_t *)VMM_TEST_VIRTUAL_ADDRESS;
+    *vptr = TEST_VAL;
+
+    if (*vptr != TEST_VAL) {
+        vga_puts("  [FAIL] Memory readback mismatch.\n");
+        vmm_unmap_page(VMM_TEST_VIRTUAL_ADDRESS);
+        pmm_free_frame(phys_frame);
+        return;
+    }
+
+    /* Cross-verify via identity map */
+    volatile uint64_t *iptr = (volatile uint64_t *)phys_frame;
+    if (*iptr != TEST_VAL) {
+        vga_puts("  [FAIL] Physical identity mismatch.\n");
+        vmm_unmap_page(VMM_TEST_VIRTUAL_ADDRESS);
+        pmm_free_frame(phys_frame);
+        return;
+    }
+    vga_puts("  Memory access: OK\n");
+
+    /* 5. Unmap page */
+    if (vmm_unmap_page(VMM_TEST_VIRTUAL_ADDRESS) != 0) {
+        vga_puts("  [FAIL] Unmapping failed.\n");
+        pmm_free_frame(phys_frame);
+        return;
+    }
+    vga_puts("  Unmap: OK\n");
+
+    /* 6. Release physical frame */
+    pmm_free_frame(phys_frame);
+    vga_puts("  Frame released: OK\n");
+
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("VMM test passed!\n");
+    vga_set_color(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
 }
 
 /*

@@ -49,6 +49,16 @@
   - Freestanding 64-bit hexadecimal address printer (`vga_print_hex()`).
   - Shell commands: `meminfo` (memory accounting), `alloc` (frame allocation), `free` (frame deallocation).
 
+- **Stage 5B: Virtual Memory Manager / 4 KiB Page Mapping**
+  - 4-level paging management (PML4 -> PDPT -> PD -> PT) using active CR3 root.
+  - Preserves existing boot-time 2 MiB identity mapping (0–1 GiB).
+  - Dynamic intermediate page-table allocation through PMM with mandatory zero-initialization.
+  - Virtual-to-physical 4 KiB page mapping (`vmm_map_page`), unmapping (`vmm_unmap_page`), and query (`vmm_get_mapping`).
+  - Individual TLB invalidation via `invlpg` instruction.
+  - CPU Exception 14 Page Fault (#PF) diagnostic ISR reading faulting address from CR2 and decoding error code.
+  - Shell commands: `vmmap` (virtual memory layout & test region) and `vmtest` (end-to-end PMM -> VMM -> write/read access -> unmap -> free verification).
+  - *Note: Stage 5B establishes page mapping infrastructure and does not yet implement user-space memory or processes.*
+
 ---
 
 ## 2. Directory Structure
@@ -64,17 +74,18 @@ MyOS/
 ├── test_stage3b.py              # Stage 3B automated test suite
 ├── test_stage4.py               # Stage 4 automated test suite
 ├── test_stage5a.py              # Stage 5A automated test suite
+├── test_stage5b.py              # Stage 5B automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
     │       ├── boot.S           # Multiboot headers & 32-bit to 64-bit transition
-    │       └── interrupts.S     # Low-level 64-bit ISR stubs (timer, keyboard)
+    │       └── interrupts.S     # Low-level 64-bit ISR stubs (timer, keyboard, #PF)
     └── kernel/
         ├── io.h                 # Port I/O inline assembly (inb, outb, io_wait)
         ├── vga.h                # VGA text mode interface (colors, print_dec, print_hex)
         ├── vga.c                # VGA driver implementation
         ├── idt.h                # IDT descriptor structures & vector definitions
-        ├── idt.c                # IDT table & lidt loading
+        ├── idt.c                # IDT table & lidt loading (#PF handler)
         ├── pic.h                # 8259 PIC interface & EOI handling
         ├── pic.c                # PIC initialization, remapping & masking
         ├── keyboard.h           # PS/2 keyboard interface
@@ -88,6 +99,8 @@ MyOS/
         ├── multiboot.h          # Multiboot 1 specifications and memory map structures
         ├── pmm.h                # Physical memory manager interface & frame constants
         ├── pmm.c                # 4 KiB frame bitmap allocator & reserved memory tracker
+        ├── vmm.h                # Virtual memory manager interface & translation macros
+        ├── vmm.c                # 4-level page table walk, mapping & TLB invalidation
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -118,5 +131,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage5a.py
+python3 test_stage5b.py
 ```
