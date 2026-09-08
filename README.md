@@ -101,8 +101,28 @@
   - Dedicated low-level privilege transition routine `switch_to_user_mode` constructing a 5-quadword `IRETQ` frame (`SS=0x1B`, `RSP=0x60002000`, `RFLAGS=0x202`, `CS=0x23`, `RIP=0x60000000`) and executing `iretq`.
   - Minimal user test program executing entirely at CPL 3: reads `%cs`, confirms `CPL == 3`, writes `observed_cpl = 3` and canary magic `0x1337BEEF` to user memory, runs an iteration loop, and traps cleanly back to Ring 0 via IDT vector `0x80` (`IDT_FLAG_USER_INTERRUPT_GATE = 0xEE`).
   - Privilege transition return routine `isr_user_return` restoring kernel data segments, capturing hardware-saved `CS` (`0x23`) and `SS` (`0x1B`), and returning to C kernel control.
-  - Shell commands: `gdtinfo` (displays GDT descriptor table, selectors, and TSS RSP0 state) and `usertest` (triggers Ring 3 transition and validates CPL 3, canary magic, loop count, and hardware frames).
-  - *Note: Stage 8A establishes the hardware and memory foundations for Ring 3 and does not yet implement syscall/sysret, ELF loading, file systems, or separate user process address spaces.*
+- **Stage 8B: System Calls (int 0x80 ABI & Pointer Validation)**
+  - Minimal, robust system-call subsystem allowing Ring 3 user code to request controlled kernel services.
+  - System call ABI via `int 0x80` Interrupt Gate (`IDT_FLAG_USER_INTERRUPT_GATE = 0xEE`):
+    - Syscall number in `%rax`: `SYS_EXIT` (0), `SYS_WRITE` (1), `SYS_GETTIME` (2).
+    - Syscall arguments in `%rdi` (arg1), `%rsi` (arg2), `%rdx` (arg3).
+    - Return value in `%rax`: signed 64-bit value (`>= 0` on success, negative error code on failure).
+    - Preserved user registers across system call boundary via assembly wrapper `isr_syscall`.
+  - Kernel boundary defense & user pointer validation (`syscall_validate_user_buffer`):
+    - Strict rejection of NULL pointers.
+    - Strict rejection of kernel-space addresses (`< 0x60000000` or `>= 0x60002000`).
+    - Pointer arithmetic overflow protection (`vaddr + len < vaddr`).
+    - Multi-page range validation ensuring every page in `[vaddr, vaddr + len)` is mapped in the VMM with `PTE_PRESENT | PTE_USER`.
+    - Returns `SYSCALL_EFAULT` (`-2`) on invalid user memory addresses without causing kernel page faults.
+    - Returns `SYSCALL_ENOSYS` (`-3`) on unrecognized syscall numbers.
+  - Initial system calls:
+    - `SYS_EXIT` (0): Clean privilege transition from Ring 3 back to Ring 0 kernel caller via `isr_user_return`.
+    - `SYS_WRITE` (1): Safely writes user-space string buffer to VGA/terminal, returning number of bytes written.
+    - `SYS_GETTIME` (2): Returns current system timer tick count (`timer_get_ticks()`).
+  - Ring 3 user program (`syscall_test_program`) and user-side wrappers (`user_syscall0`, `user_syscall2`):
+    - Executes entirely at CPL 3, verifies CPL == 3, invokes `SYS_WRITE`, tests `SYS_GETTIME` monotonicity, verifies `-ENOSYS` on invalid syscalls, and verifies `-EFAULT` on invalid pointers.
+  - Shell command: `syscalltest` (runs Ring 3 syscall verification and prints comprehensive test results).
+
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
@@ -172,13 +192,14 @@ MyOS/
 ├── test_stage7a.py              # Stage 7A automated test suite
 ├── test_stage7b.py              # Stage 7B automated test suite
 ├── test_stage8a.py              # Stage 8A automated test suite
+├── test_stage8b.py              # Stage 8B automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
     │       ├── boot.S           # Multiboot headers & 32-bit to 64-bit transition
     │       ├── interrupts.S     # Low-level 64-bit ISR stubs (timer, keyboard, #PF)
     │       ├── context_switch.S # Cooperative assembly context switch routine
-    │       └── user.S           # switch_to_user_mode, user program & isr_user_return
+    │       └── user.S           # switch_to_user_mode, user program, isr_user_return & isr_syscall
     └── kernel/
         ├── io.h                 # Port I/O inline assembly (inb, outb, io_wait)
         ├── vga.h                # VGA text mode interface (colors, print_dec, print_hex)
@@ -210,6 +231,8 @@ MyOS/
         ├── scheduler.c          # Preemptive round-robin scheduler & demo tasks
         ├── user.h               # User mode subsystem interface & status block definitions
         ├── user.c               # User memory mapping, vector 0x80 gate & verification
+        ├── syscall.h            # System call numbers, error codes & status block definitions
+        ├── syscall.c            # C syscall dispatcher, sys_write, sys_gettime & validation
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -240,5 +263,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage8a.py
+python3 test_stage8b.py
 ```

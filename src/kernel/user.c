@@ -3,6 +3,7 @@
  */
 
 #include "user.h"
+#include "syscall.h"
 #include "gdt.h"
 #include "idt.h"
 #include "pmm.h"
@@ -63,8 +64,8 @@ void user_init(void) {
         return;
     }
 
-    /* 4. Install user return trap gate on vector 0x80 (DPL 3, User Interrupt Gate) */
-    idt_set_gate(IDT_USER_RETURN_VECTOR, isr_user_return, 0x08, IDT_FLAG_USER_INTERRUPT_GATE);
+    /* 4. Install system call handler on vector 0x80 (DPL 3, User Interrupt Gate) */
+    syscall_init();
 
     /* 5. Zero the user stack and status region */
     kmemset((void *)USER_STACK_VADDR, 0, (size_t)VMM_PAGE_SIZE);
@@ -112,6 +113,13 @@ int user_run_test(void) {
 
     /* Reset status block */
     kmemset((void *)USER_STACK_VADDR, 0, (size_t)VMM_PAGE_SIZE);
+
+    /* Ensure user_test_program is loaded in user code frame */
+    size_t code_size = (size_t)((uint64_t)user_test_program_end - (uint64_t)user_test_program);
+    if (code_size > (size_t)VMM_PAGE_SIZE) {
+        code_size = (size_t)VMM_PAGE_SIZE;
+    }
+    kmemcpy((void *)user_code_phys, (const void *)user_test_program, code_size);
 
     /* Execute transition into user mode */
     switch_to_user_mode(USER_CODE_VADDR, USER_STACK_TOP);

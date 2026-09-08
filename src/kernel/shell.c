@@ -8,6 +8,7 @@
 #include "scheduler.h"
 #include "gdt.h"
 #include "user.h"
+#include "syscall.h"
 #include <stddef.h>
 
 /*
@@ -60,31 +61,33 @@ static void builtin_tasktest(const char *args);
 static void builtin_sched(const char *args);
 static void builtin_gdtinfo(const char *args);
 static void builtin_usertest(const char *args);
+static void builtin_syscalltest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
  * Static command table terminated with a sentinel {NULL, NULL, NULL}.
  */
 static const struct shell_command commands[] = {
-    {"help",     "List commands",         builtin_help},
-    {"clear",    "Clear screen",          builtin_clear},
-    {"about",    "System information",    builtin_about},
-    {"echo",     "Print arguments",       builtin_echo},
-    {"uptime",   "System uptime",         builtin_uptime},
-    {"meminfo",  "Physical memory info",  builtin_meminfo},
-    {"alloc",    "Allocate 4 KiB frame",  builtin_alloc},
-    {"free",     "Free test frame",       builtin_free},
-    {"vmmap",    "Virtual memory info",   builtin_vmmap},
-    {"vmtest",   "Test virtual mapping",  builtin_vmtest},
-    {"heapinfo", "Kernel heap info",      builtin_heapinfo},
-    {"heaptest", "Test kernel heap",      builtin_heaptest},
-    {"tasks",    "Kernel tasks list",     builtin_tasks},
-    {"tasktest", "Test task switching",   builtin_tasktest},
-    {"sched",    "Scheduler statistics",  builtin_sched},
-    {"gdtinfo",  "GDT and TSS info",      builtin_gdtinfo},
-    {"usertest", "Test Ring 3 user mode", builtin_usertest},
-    {"halt",     "Halt system",           builtin_halt},
-    {NULL,       NULL,                    NULL}
+    {"help",        "List commands",         builtin_help},
+    {"clear",       "Clear screen",          builtin_clear},
+    {"about",       "System information",    builtin_about},
+    {"echo",        "Print arguments",       builtin_echo},
+    {"uptime",      "System uptime",         builtin_uptime},
+    {"meminfo",     "Physical memory info",  builtin_meminfo},
+    {"alloc",       "Allocate 4 KiB frame",  builtin_alloc},
+    {"free",        "Free test frame",       builtin_free},
+    {"vmmap",       "Virtual memory info",   builtin_vmmap},
+    {"vmtest",      "Test virtual mapping",  builtin_vmtest},
+    {"heapinfo",    "Kernel heap info",      builtin_heapinfo},
+    {"heaptest",    "Test kernel heap",      builtin_heaptest},
+    {"tasks",       "Kernel tasks list",     builtin_tasks},
+    {"tasktest",    "Test task switching",   builtin_tasktest},
+    {"sched",       "Scheduler statistics",  builtin_sched},
+    {"gdtinfo",     "GDT and TSS info",      builtin_gdtinfo},
+    {"usertest",    "Test Ring 3 user mode", builtin_usertest},
+    {"syscalltest", "Test system calls",     builtin_syscalltest},
+    {"halt",        "Halt system",           builtin_halt},
+    {NULL,          NULL,                    NULL}
 };
 
 /*
@@ -98,7 +101,7 @@ static void builtin_help(const char *args) {
         vga_puts("  ");
         vga_puts(commands[i].name);
         size_t name_len = kstrlen(commands[i].name);
-        for (size_t s = name_len; s < 10; s++) {
+        for (size_t s = name_len; s < 12; s++) {
             vga_putc(' ');
         }
         vga_puts("- ");
@@ -133,6 +136,7 @@ static void builtin_about(const char *args) {
     vga_puts("Tasks: Cooperative Context Switching Active\n");
     vga_puts("Scheduler: Timer-Driven Round-Robin Active\n");
     vga_puts("User Mode: Ring 3 Foundation Active\n");
+    vga_puts("Syscalls: int 0x80 (SYS_WRITE, SYS_GETTIME)\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -442,6 +446,15 @@ static void builtin_gdtinfo(const char *args) {
 static void builtin_usertest(const char *args) {
     (void)args;
     user_print_status();
+}
+
+/*
+ * Built-in Command: syscalltest
+ * Executes Ring 3 system call verification suite and prints report.
+ */
+static void builtin_syscalltest(const char *args) {
+    (void)args;
+    syscall_print_status();
 }
 
 /*

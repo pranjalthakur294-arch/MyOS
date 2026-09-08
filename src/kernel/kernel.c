@@ -107,6 +107,7 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     vga_puts("Stage 7A Goal Achieved: Manual context switching active!\n");
     vga_puts("Stage 7B Goal Achieved: Timer-driven round-robin scheduler active!\n");
     vga_puts("Stage 8A Goal Achieved: User mode Ring 3 foundation active!\n");
+    vga_puts("Stage 8B Goal Achieved: System call subsystem (int 0x80) active!\n");
 
     /* 16. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();
