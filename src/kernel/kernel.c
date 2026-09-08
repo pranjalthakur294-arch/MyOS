@@ -10,6 +10,7 @@
 #include "vmm.h"
 #include "heap.h"
 #include "task.h"
+#include "scheduler.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -80,18 +81,30 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 14. Run Manual Cooperative Context Switch Demonstration */
     task_run_demo();
 
+    /* 15. Initialize Round-Robin Scheduler and Preemptive Tasks */
+    scheduler_init();
+
+    vga_puts("Scheduler demo: ");
+
+    /* Enable maskable hardware interrupts to start timer-driven preemption */
+    __asm__ volatile ("sti");
+
+    /* Wait for demonstration tasks to complete their initial visible rounds */
+    while (!scheduler_is_demo_complete()) {
+        __asm__ volatile ("hlt");
+    }
+    vga_putc('\n');
+
     vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
     vga_puts("Stage 5B Goal Achieved: 4 KiB virtual page mapping active!\n");
     vga_puts("Stage 6 Goal Achieved: Dynamic kernel heap allocator active!\n");
     vga_puts("Stage 7A Goal Achieved: Manual context switching active!\n");
+    vga_puts("Stage 7B Goal Achieved: Timer-driven round-robin scheduler active!\n");
 
-    /* 15. Initialize terminal subsystem (prints initial MyOS> prompt) */
+    /* 16. Initialize terminal subsystem (prints initial MyOS> prompt) */
     terminal_init();
 
-    /* 16. Enable maskable hardware interrupts */
-    __asm__ volatile ("sti");
-
-    /* 17. Halt loop: Put CPU into low-power halt state waiting for interrupts */
+    /* 17. Main kernel loop (Task 0): wait for interrupts */
     while (1) {
         __asm__ volatile ("hlt");
     }

@@ -81,29 +81,64 @@
   - Shell commands: `tasks` (display task IDs, names, states, and stack bases) and `tasktest` (re-run cooperative context switching demonstration).
   - *Note: Stage 7A establishes cooperative kernel-mode multitasking and does not implement timer preemption, priority scheduling, or user mode (Ring 3).*
 
-```text
-Task Control Block (TCB) & Context Switch Architecture:
+- **Stage 7B: Timer-Driven Round-Robin Scheduler**
+  - Preemptive kernel multitasking driven by the 8253/8254 PIT hardware timer (IRQ0 / IDT vector `0x20` at 100 Hz).
+  - Complete 20-quadword interrupt frame (160 bytes) in `isr_timer` capturing hardware state (`SS`, `RSP`, `RFLAGS`, `CS`, `RIP`) and 15 general-purpose registers (`%r15..%rax`).
+  - Preemptive stack switching: `timer_interrupt_handler` receives interrupted `%rsp`, invokes `scheduler_tick`, and returns chosen task's `%rsp` for stack exchange and `iretq` dispatch.
+  - Round-robin task selection across active kernel tasks (`TASK_READY` or `TASK_RUNNING`), skipping `TASK_UNUSED` and `TASK_FINISHED` tasks.
+  - Re-entrancy guard preventing nested scheduler invocations.
+  - Dedicated static task stacks in `.bss` (4 KiB each, 16-byte aligned) preventing heap contamination and preserving heap test invariants (`Used: 0 bytes` at idle).
+  - Preemptive task lifecycle: exiting tasks mark `TASK_FINISHED` and halt, allowing the scheduler to deschedule them on the next timer interrupt without cooperative frame corruption.
+  - Boot demonstration: 3 concurrent tasks (Task A, Task B, Task C) execute compute loops producing interleaved output `[A] [B] [C] [A] [B] [C]`, with Task C terminating cleanly and Tasks A & B continuing background computation.
+  - Shell commands: `tasks` (updated with `Switches` column tracking per-task context switch count) and `sched` (reports scheduler policy, timer frequency, total ticks, context switches, current task PID/name, and active tasks).
+  - *Note: Stage 7B establishes preemptive kernel-mode round-robin scheduling and does not implement priority queues, dynamic sleep/blocking, user mode (Ring 3), or SMP.*
 
-  +-----------------------+              +-----------------------+
-  |  Task 0 (PID 0, main) |              |  Task 1 (PID 1, A)    |
-  |  State: RUNNING       |              |  State: READY         |
-  |  rsp: 0x10Axxx        |              |  rsp: 0x50000Fxx      |
-  |  stack_base: 0x10B000 |              |  stack_base: kmalloc  |
-  +-----------------------+              +-----------------------+
-              |                                      ^
-              | task_switch_to(task0, task1)         |
-              v                                      |
-       +-------------------------------------------------+
-       | context_switch(uint64_t **old_rsp, uint64_t *new_rsp) |
-       |                                                 |
-       | 1. pushfq                                       |
-       | 2. pushq %rbx, %rbp, %r12, %r13, %r14, %r15     |
-       | 3. movq %rsp, (%rdi)    <-- save old rsp        |
-       | 4. movq %rsi, %rsp      <-- switch to new rsp   |
-       | 5. popq %r15, %r14, %r13, %r12, %rbp, %rbx      |
-       | 6. popfq                                        |
-       | 7. ret                  <-- resume/start task   |
-       +-------------------------------------------------+
+```text
+Preemptive Timer-Driven Scheduler Architecture:
+
+   Task A Running (Busy compute)
+         |
+         | Hardware IRQ0 (100 Hz timer tick)
+         v
+   +-------------------------------------------------------+
+   | isr_timer (src/arch/x86_64/interrupts.S)              |
+   | 1. Hardware pushes: SS, RSP, RFLAGS, CS, RIP (40 B)   |
+   | 2. Pushes: RAX, RCX, RDX, RBX, RBP, RSI, RDI,         |
+   |            R8, R9, R10, R11, R12, R13, R14, R15 (120B)|
+   | 3. movq %rsp, %rdi                                    |
+   | 4. call timer_interrupt_handler                       |
+   +-------------------------------------------------------+
+         |
+         v
+   +-------------------------------------------------------+
+   | timer.c: timer_interrupt_handler                      |
+   | - timer_ticks++                                       |
+   | - pic_send_eoi(0)                                     |
+   | - return scheduler_tick(current_rsp)                 |
+   +-------------------------------------------------------+
+         |
+         v
+   +-------------------------------------------------------+
+   | scheduler.c: scheduler_tick                           |
+   | - curr->rsp = current_rsp                             |
+   | - curr->state = TASK_READY                            |
+   | - Round-Robin select: candidate = (curr->id + 1) % N  |
+   | - next->state = TASK_RUNNING                          |
+   | - next->switch_count++                                |
+   | - context_switches++                                  |
+   | - return next->rsp                                    |
+   +-------------------------------------------------------+
+         |
+         v
+   +-------------------------------------------------------+
+   | isr_timer (src/arch/x86_64/interrupts.S)              |
+   | 5. movq %rax, %rsp   <-- Switch stack to Task B       |
+   | 6. popq %r15..%rax   <-- Restore Task B registers     |
+   | 7. iretq             <-- Resume/dispatch Task B       |
+   +-------------------------------------------------------+
+         |
+         v
+   Task B Resumed / Running
 ```
 
 ---
@@ -124,6 +159,7 @@ MyOS/
 ├── test_stage5b.py              # Stage 5B automated test suite
 ├── test_stage6.py               # Stage 6 automated test suite
 ├── test_stage7a.py              # Stage 7A automated test suite
+├── test_stage7b.py              # Stage 7B automated test suite
 └── src/
     ├── arch/
     │   └── x86_64/
@@ -155,6 +191,8 @@ MyOS/
         ├── heap.c               # Free-list allocator, kmalloc/kfree & coalescing
         ├── task.h               # Kernel task subsystem, TCB & task states
         ├── task.c               # Task management, cooperative switching & demo
+        ├── scheduler.h          # Round-robin scheduler interface & statistics
+        ├── scheduler.c          # Preemptive round-robin scheduler & demo tasks
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -185,5 +223,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage7a.py
+python3 test_stage7b.py
 ```

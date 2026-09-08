@@ -172,8 +172,7 @@ void pmm_init(uint64_t multiboot_info_addr) {
     /* Step 5: Print verification milestones */
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("[OK] Multiboot memory map parsed\n");
-    vga_puts("[OK] Physical memory manager initialized\n");
-    vga_puts("[OK] 4 KiB frame allocator ready\n");
+    vga_puts("[OK] Physical memory manager initialized | [OK] 4 KiB frame allocator ready\n");
 }
 
 /*

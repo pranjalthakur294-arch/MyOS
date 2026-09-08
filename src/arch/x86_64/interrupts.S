@@ -12,42 +12,59 @@
 .global isr_timer
 .type isr_timer, @function
 
-/* External C handler defined in timer.c */
-.extern timer_handler
+/* External C timer and scheduler handler defined in timer.c */
+.extern timer_interrupt_handler
 
 isr_timer:
     /*
-     * When this wrapper is entered, the CPU has already automatically
-     * pushed 5 quadwords (40 bytes) onto the stack:
-     *   [SS], [RSP], [RFLAGS], [CS], [RIP]
+     * When this wrapper is entered via IRQ0 (vector 0x20), the CPU hardware
+     * automatically pushes 5 quadwords (40 bytes) onto the current stack:
+     *   [SS]       +152
+     *   [RSP]      +144
+     *   [RFLAGS]   +136
+     *   [CS]       +128
+     *   [RIP]      +120
      *
-     * We push 15 general-purpose registers (120 bytes).
-     * Total stack delta = 40 + 120 = 160 bytes (a multiple of 16).
-     * This guarantees 16-byte stack alignment before the C function call.
+     * We push all 15 general-purpose registers (120 bytes) to capture the
+     * complete, uncorrupted CPU execution state of the preempted task:
      */
-    pushq %rax
-    pushq %rcx
-    pushq %rdx
-    pushq %rbx
-    pushq %rbp
-    pushq %rsi
-    pushq %rdi
-    pushq %r8
-    pushq %r9
-    pushq %r10
-    pushq %r11
-    pushq %r12
-    pushq %r13
-    pushq %r14
-    pushq %r15
+    pushq %rax      /* +112 */
+    pushq %rcx      /* +104 */
+    pushq %rdx      /* +96  */
+    pushq %rbx      /* +88  */
+    pushq %rbp      /* +80  */
+    pushq %rsi      /* +72  */
+    pushq %rdi      /* +64  */
+    pushq %r8       /* +56  */
+    pushq %r9       /* +48  */
+    pushq %r10      /* +40  */
+    pushq %r11      /* +32  */
+    pushq %r12      /* +24  */
+    pushq %r13      /* +16  */
+    pushq %r14      /* +8   */
+    pushq %r15      /* 0    */
 
     /* System V AMD64 ABI requires the Direction Flag to be cleared */
     cld
 
-    /* Invoke the high-level C timer interrupt handler */
-    call timer_handler
+    /*
+     * Pass current %rsp in %rdi (1st parameter in System V AMD64 ABI).
+     * %rsp points to the bottom of the complete 20-quadword interrupt frame.
+     * Note: Total frame size is 40 + 120 = 160 bytes (a multiple of 16).
+     * Since %rsp before interrupt was 16-byte aligned, %rsp here is 16-byte aligned.
+     */
+    movq %rsp, %rdi
+    call timer_interrupt_handler
 
-    /* Restore all general-purpose registers in reverse order */
+    /*
+     * timer_interrupt_handler returns the %rsp of the task that should run next.
+     * If the scheduler selected a different task, %rax is that task's saved %rsp.
+     * If no context switch occurred, %rax is the same %rsp passed in %rdi.
+     * We switch %rsp to the target task's stack pointer:
+     */
+    movq %rax, %rsp
+
+    /* Restore all 15 general-purpose registers in reverse order from target stack */
     popq %r15
     popq %r14
     popq %r13
@@ -67,7 +84,7 @@ isr_timer:
     /*
      * 64-bit Interrupt Return:
      * Atomically pops RIP, CS, RFLAGS, RSP, and SS from the stack
-     * and resumes the interrupted instruction sequence.
+     * and resumes execution of the target task.
      */
     iretq
 

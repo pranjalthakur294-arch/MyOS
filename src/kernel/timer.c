@@ -1,6 +1,7 @@
 #include "timer.h"
 #include "io.h"
 #include "pic.h"
+#include "vga.h"
 
 /*
  * Monotonically increasing 64-bit counter tracking elapsed timer ticks.
@@ -34,6 +35,8 @@ void timer_init(void) {
     pic_clear_mask(0);
 }
 
+#include "scheduler.h"
+
 /*
  * timer_handler - C handler invoked on every IRQ0 (vector 0x20).
  * Increments tick counter and sends End of Interrupt (EOI) to Master PIC.
@@ -41,6 +44,24 @@ void timer_init(void) {
 void timer_handler(void) {
     timer_ticks++;
     pic_send_eoi(0);
+}
+
+/*
+ * timer_interrupt_handler - Invoked from isr_timer in interrupts.S.
+ *
+ * Increments monotonic tick counter, sends EOI to the 8259 PIC, and
+ * invokes the scheduler to select the next runnable task.
+ *
+ * Parameters:
+ *   current_rsp - Stack pointer of interrupted task (bottom of interrupt frame).
+ *
+ * Returns:
+ *   The stack pointer (%rsp) of the task to resume via iretq.
+ */
+uint64_t timer_interrupt_handler(uint64_t current_rsp) {
+    timer_ticks++;
+    pic_send_eoi(0);
+    return scheduler_tick(current_rsp);
 }
 
 /*

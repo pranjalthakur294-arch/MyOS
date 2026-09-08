@@ -41,6 +41,7 @@ typedef struct task {
     size_t stack_size;        /* Size of allocated stack in bytes */
     task_entry_t entry;       /* Task entry function */
     void *arg;                /* Argument passed to entry function */
+    uint64_t switch_count;    /* Number of times this task was switched to */
     char name[16];            /* Human-readable label for debugging */
 } task_t;
 
@@ -49,8 +50,12 @@ typedef struct task {
  */
 void task_init(void);
 task_t *task_create(task_entry_t entry, void *arg, const char *name);
+task_t *task_create_coop(task_entry_t entry, void *arg, const char *name);
 void task_switch_to(task_t *next);
 task_t *task_get_current(void);
+void task_set_current(task_t *t);
+task_t *task_get_by_id(uint32_t id);
+task_t *task_get_table(void);
 void task_bootstrap(void);
 void task_exit(void);
 void task_run_demo(void);

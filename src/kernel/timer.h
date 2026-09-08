@@ -23,6 +23,7 @@
 /* Public Timer API */
 void timer_init(void);
 void timer_handler(void);
+uint64_t timer_interrupt_handler(uint64_t current_rsp);
 uint64_t timer_get_ticks(void);
 uint64_t timer_get_uptime_ms(void);
 

@@ -1,13 +1,21 @@
 #include "task.h"
 #include "heap.h"
 #include "vga.h"
+#include "scheduler.h"
 
 /*
- * Static kernel task table for Stage 7A.
+ * Static kernel task table for Stage 7A and 7B.
  * Index 0 represents the main kernel task (boot thread).
  */
 static task_t task_table[MAX_TASKS];
 static task_t *current_task = NULL;
+
+/*
+ * Static dedicated kernel task stacks in .bss.
+ * Each task slot has an independent 4 KiB buffer aligned to 16 bytes.
+ * This guarantees independent, isolated stacks without consuming heap memory.
+ */
+static uint8_t task_stacks[MAX_TASKS][TASK_STACK_SIZE] __attribute__((aligned(16)));
 
 /* External symbols from boot.S for the initial kernel stack */
 extern uint8_t stack_bottom[];
@@ -35,6 +43,30 @@ task_t *task_get_current(void) {
 }
 
 /*
+ * task_set_current - Sets the currently executing task.
+ */
+void task_set_current(task_t *t) {
+    current_task = t;
+}
+
+/*
+ * task_get_by_id - Returns pointer to task with specified PID, or NULL if invalid.
+ */
+task_t *task_get_by_id(uint32_t id) {
+    if (id < MAX_TASKS) {
+        return &task_table[id];
+    }
+    return NULL;
+}
+
+/*
+ * task_get_table - Returns pointer to base of task table.
+ */
+task_t *task_get_table(void) {
+    return task_table;
+}
+
+/*
  * task_init - Initializes the kernel task infrastructure.
  *
  * Configures the task table and registers the currently running
@@ -45,10 +77,11 @@ void task_init(void) {
         task_table[i].id = (uint32_t)i;
         task_table[i].state = TASK_UNUSED;
         task_table[i].rsp = 0;
-        task_table[i].stack_base = NULL;
-        task_table[i].stack_size = 0;
+        task_table[i].stack_base = (void *)task_stacks[i];
+        task_table[i].stack_size = TASK_STACK_SIZE;
         task_table[i].entry = NULL;
         task_table[i].arg = NULL;
+        task_table[i].switch_count = 0;
         task_table[i].name[0] = '\0';
     }
 
@@ -60,18 +93,21 @@ void task_init(void) {
     task_table[0].stack_size = 16384;
     task_table[0].entry = NULL;
     task_table[0].arg = NULL;
+    task_table[0].switch_count = 0;
     str_copy(task_table[0].name, "main", sizeof(task_table[0].name));
 
     current_task = &task_table[0];
 
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_puts("[OK] Kernel task subsystem initialized\n");
-    vga_puts("[OK] Task stacks allocated\n");
+    vga_puts("[OK] Kernel task subsystem initialized | [OK] Task stacks allocated\n");
     vga_puts("[OK] Context switching initialized\n");
 }
 
 /*
- * task_create - Allocates an independent stack and initializes a new task.
+ * task_create - Allocates an independent stack and initializes a new preemptive task.
+ *
+ * Constructs the 20-quadword (160 bytes) interrupt frame matching what
+ * isr_timer expects to pop before iretq.
  *
  * Parameters:
  *   entry - Function pointer to the task entry routine.
@@ -79,85 +115,119 @@ void task_init(void) {
  *   name  - Debug label string for the task.
  *
  * Returns:
- *   Pointer to initialized task_t, or NULL on allocation/capacity failure.
+ *   Pointer to initialized task_t, or NULL on capacity failure.
  */
 task_t *task_create(task_entry_t entry, void *arg, const char *name) {
     if (!entry) {
         return NULL;
     }
 
-    /* 1. Locate an unused or finished task slot */
+    /* 1. Locate an unused or finished task slot in sequential order */
     int slot = -1;
     for (int i = 1; i < MAX_TASKS; i++) {
-        if (task_table[i].state == TASK_UNUSED) {
+        if (task_table[i].state == TASK_UNUSED || task_table[i].state == TASK_FINISHED) {
             slot = i;
             break;
-        }
-    }
-    if (slot < 0) {
-        for (int i = 1; i < MAX_TASKS; i++) {
-            if (task_table[i].state == TASK_FINISHED) {
-                slot = i;
-                break;
-            }
         }
     }
     if (slot < 0) {
         return NULL; /* Table full */
     }
 
-    /* If reusing a finished slot with an existing stack buffer, release it */
-    if (task_table[slot].stack_base) {
-        kfree(task_table[slot].stack_base);
-        task_table[slot].stack_base = NULL;
+    task_t *t = &task_table[slot];
+    t->id = (uint32_t)slot;
+    t->state = TASK_READY;
+    t->stack_base = (void *)task_stacks[slot];
+    t->stack_size = TASK_STACK_SIZE;
+    t->entry = entry;
+    t->arg = arg;
+    t->switch_count = 0;
+    str_copy(t->name, name ? name : "task", sizeof(t->name));
+
+    /*
+     * 2. Construct the initial 20-quadword (160 bytes) interrupt stack frame.
+     *
+     * Frame layout (from low memory / %rsp to high memory):
+     *   sp[0..14]:  15 general-purpose registers (r15..rax, with rdi = arg)
+     *   sp[15]:     RIP (task_bootstrap)
+     *   sp[16]:     CS (0x08)
+     *   sp[17]:     RFLAGS (0x202 = IF=1, bit 1 reserved=1)
+     *   sp[18]:     RSP (stack_top - 8, ensuring 16-byte alignment at bootstrap)
+     *   sp[19]:     SS (0x10)
+     */
+    uint64_t stack_top = ((uint64_t)task_stacks[slot] + TASK_STACK_SIZE) & ~0xFULL;
+    uint64_t *sp = (uint64_t *)(stack_top - 160);
+
+    sp[19] = 0x10ULL;                         /* SS: kernel data segment */
+    sp[18] = stack_top - 8;                   /* RSP: clean stack top */
+    sp[17] = 0x202ULL;                        /* RFLAGS: interrupts enabled (IF=1) */
+    sp[16] = 0x08ULL;                         /* CS: kernel code segment */
+    sp[15] = (uint64_t)task_bootstrap;        /* RIP: entry trampoline */
+
+    /* 15 General Purpose Registers restored by isr_timer */
+    sp[14] = 0ULL;                            /* RAX */
+    sp[13] = 0ULL;                            /* RCX */
+    sp[12] = 0ULL;                            /* RDX */
+    sp[11] = 0ULL;                            /* RBX */
+    sp[10] = 0ULL;                            /* RBP */
+    sp[9]  = 0ULL;                            /* RSI */
+    sp[8]  = (uint64_t)arg;                   /* RDI (arg) */
+    sp[7]  = 0ULL;                            /* R8 */
+    sp[6]  = 0ULL;                            /* R9 */
+    sp[5]  = 0ULL;                            /* R10 */
+    sp[4]  = 0ULL;                            /* R11 */
+    sp[3]  = 0ULL;                            /* R12 */
+    sp[2]  = 0ULL;                            /* R13 */
+    sp[1]  = 0ULL;                            /* R14 */
+    sp[0]  = 0ULL;                            /* R15 */
+
+    t->rsp = (uint64_t)sp;
+    return t;
+}
+
+/*
+ * task_create_coop - Creates a task with a cooperative context_switch frame.
+ * Used for Stage 7A manual context switching verification (task_run_demo).
+ */
+task_t *task_create_coop(task_entry_t entry, void *arg, const char *name) {
+    if (!entry) {
+        return NULL;
     }
 
-    /* 2. Allocate independent kernel stack from the kernel heap */
-    void *stack = kmalloc(TASK_STACK_SIZE);
-    if (!stack) {
-        return NULL; /* Out of heap memory */
+    int slot = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (task_table[i].state == TASK_UNUSED || task_table[i].state == TASK_FINISHED) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        return NULL;
     }
 
     task_t *t = &task_table[slot];
     t->id = (uint32_t)slot;
     t->state = TASK_READY;
-    t->stack_base = stack;
+    t->stack_base = (void *)task_stacks[slot];
     t->stack_size = TASK_STACK_SIZE;
     t->entry = entry;
     t->arg = arg;
+    t->switch_count = 0;
     str_copy(t->name, name ? name : "task", sizeof(t->name));
 
-    /*
-     * 3. Construct the initial stack frame.
-     *
-     * System V AMD64 ABI alignment constraint:
-     *   At function entry point (%rip = task_bootstrap), (%rsp + 8) % 16 == 0.
-     *
-     * Stack layout from top (high memory) to bottom (low memory):
-     *   stack_top - 8:  0 (dummy return address padding)
-     *   stack_top - 16: task_bootstrap (popped into RIP by 'ret' in context_switch)
-     *   stack_top - 24: RFLAGS (0x202 = IF enabled, bit 1 reserved)
-     *   stack_top - 32: RBX (0)
-     *   stack_top - 40: RBP (0)
-     *   stack_top - 48: R12 (0)
-     *   stack_top - 56: R13 (0)
-     *   stack_top - 64: R14 (0)
-     *   stack_top - 72: R15 (0)
-     *
-     * Initial saved %rsp = stack_top - 72.
-     */
-    uint64_t stack_top = ((uint64_t)stack + TASK_STACK_SIZE) & ~0xFULL;
+    /* 8-quadword cooperative frame for context_switch.S */
+    uint64_t stack_top = ((uint64_t)task_stacks[slot] + TASK_STACK_SIZE) & ~0xFULL;
     uint64_t *sp = (uint64_t *)stack_top;
 
-    *(--sp) = 0ULL;                           /* stack_top - 8 */
-    *(--sp) = (uint64_t)task_bootstrap;       /* stack_top - 16: initial RIP */
-    *(--sp) = 0x202ULL;                       /* stack_top - 24: RFLAGS (IF=1) */
-    *(--sp) = 0ULL;                           /* stack_top - 32: RBX */
-    *(--sp) = 0ULL;                           /* stack_top - 40: RBP */
-    *(--sp) = 0ULL;                           /* stack_top - 48: R12 */
-    *(--sp) = 0ULL;                           /* stack_top - 56: R13 */
-    *(--sp) = 0ULL;                           /* stack_top - 64: R14 */
-    *(--sp) = 0ULL;                           /* stack_top - 72: R15 */
+    *(--sp) = 0ULL;                           /* dummy return address */
+    *(--sp) = (uint64_t)task_bootstrap;       /* initial RIP for ret */
+    *(--sp) = 0x202ULL;                       /* RFLAGS */
+    *(--sp) = 0ULL;                           /* RBX */
+    *(--sp) = 0ULL;                           /* RBP */
+    *(--sp) = 0ULL;                           /* R12 */
+    *(--sp) = 0ULL;                           /* R13 */
+    *(--sp) = 0ULL;                           /* R14 */
+    *(--sp) = 0ULL;                           /* R15 */
 
     t->rsp = (uint64_t)sp;
     return t;
@@ -210,7 +280,19 @@ void task_exit(void) {
         curr->state = TASK_FINISHED;
     }
 
-    /* Find any other runnable task */
+    /*
+     * If the preemptive scheduler is active, do not execute a manual cooperative
+     * context_switch. Instead, enable interrupts and halt; the next timer tick
+     * will automatically deschedule this finished task and resume the next runnable task.
+     */
+    if (scheduler_is_enabled()) {
+        __asm__ volatile ("sti");
+        while (1) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    /* Stage 7A cooperative context switching fallback */
     task_t *target = NULL;
     for (int i = 1; i < MAX_TASKS; i++) {
         if (task_table[i].state == TASK_READY && &task_table[i] != curr) {
@@ -235,19 +317,19 @@ void task_exit(void) {
 }
 
 /*
- * Task A demonstration routine
+ * Task A demonstration routine (Stage 7A cooperative test)
  */
 static void demo_task_a(void *arg) {
     (void)arg;
-    vga_puts("Task A: start\n");
+    vga_puts("Task A: start | ");
     task_switch_to(&task_table[2]);
-    vga_puts("Task A: resumed\n");
+    vga_puts("Task A: resumed | ");
     task_switch_to(&task_table[2]);
-    vga_puts("Task A: finished\n");
+    vga_puts("Task A: finished | ");
 }
 
 /*
- * Task B demonstration routine
+ * Task B demonstration routine (Stage 7A cooperative test)
  */
 static void demo_task_b(void *arg) {
     (void)arg;
@@ -261,13 +343,12 @@ static void demo_task_b(void *arg) {
 /*
  * task_run_demo - Executes the manual cooperative context switching demo.
  *
- * Creates Task A and Task B, verifies bidirectional context switching,
- * ensures safe termination, and cleans up heap stacks so heap accounting
- * invariants remain pristine.
+ * Creates Task A and Task B using cooperative context frames, verifies
+ * bidirectional context switching, and ensures safe termination.
  */
 void task_run_demo(void) {
-    task_t *ta = task_create(demo_task_a, NULL, "task_a");
-    task_t *tb = task_create(demo_task_b, NULL, "task_b");
+    task_t *ta = task_create_coop(demo_task_a, NULL, "task_a");
+    task_t *tb = task_create_coop(demo_task_b, NULL, "task_b");
 
     if (!ta || !tb) {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
@@ -284,28 +365,13 @@ void task_run_demo(void) {
      */
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("[OK] Manual context switch test completed\n");
-
-    /*
-     * Safe Stack Deallocation:
-     * Task 0 is running on the boot stack in .bss (not on the heap stacks).
-     * Releasing the demo stacks returns the heap to 0 used bytes and 65,512
-     * free bytes, preserving heap accounting invariants for heaptest/heapinfo.
-     */
-    if (ta->stack_base) {
-        kfree(ta->stack_base);
-        ta->stack_base = NULL;
-    }
-    if (tb->stack_base) {
-        kfree(tb->stack_base);
-        tb->stack_base = NULL;
-    }
 }
 
 /*
  * task_print_list - Displays active and past tasks for the shell 'tasks' command.
  */
 void task_print_list(void) {
-    vga_puts("\nTasks:\n  PID  Name       State     Stack Base\n");
+    vga_puts("\nTasks:\n  PID  Name       State     Stack Base  Switches\n");
     for (int i = 0; i < MAX_TASKS; i++) {
         if (task_table[i].state == TASK_UNUSED) {
             continue;
@@ -335,6 +401,8 @@ void task_print_list(void) {
         } else {
             vga_puts("(freed)");
         }
+        vga_puts("  ");
+        vga_print_dec((uint32_t)task_table[i].switch_count);
         vga_putc('\n');
     }
 }
