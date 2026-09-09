@@ -347,6 +347,31 @@ void task_exit(void) {
         curr->state = TASK_FINISHED;
     }
 
+    /* Stage 7A cooperative demo handling */
+    extern task_t *demo_task_a_ptr;
+    extern task_t *demo_task_b_ptr;
+    extern task_t *demo_caller_task;
+
+    if (curr == demo_task_a_ptr) {
+        if (demo_task_b_ptr && demo_task_b_ptr->state == TASK_READY) {
+            task_switch_to(demo_task_b_ptr);
+            return;
+        }
+        if (demo_caller_task) {
+            task_switch_to(demo_caller_task);
+            return;
+        }
+    } else if (curr == demo_task_b_ptr) {
+        if (demo_task_a_ptr && demo_task_a_ptr->state == TASK_READY) {
+            task_switch_to(demo_task_a_ptr);
+            return;
+        }
+        if (demo_caller_task) {
+            task_switch_to(demo_caller_task);
+            return;
+        }
+    }
+
     /*
      * If the preemptive scheduler is active, do not execute a manual cooperative
      * context_switch. Instead, enable interrupts and halt; the next timer tick
@@ -383,15 +408,20 @@ void task_exit(void) {
     }
 }
 
+/* Dynamic pointers for demo tasks to allow re-runs after scheduler initialization */
+task_t *demo_task_a_ptr = NULL;
+task_t *demo_task_b_ptr = NULL;
+task_t *demo_caller_task = NULL;
+
 /*
  * Task A demonstration routine (Stage 7A cooperative test)
  */
 static void demo_task_a(void *arg) {
     (void)arg;
     vga_puts("Task A: start | ");
-    task_switch_to(&task_table[2]);
+    task_switch_to(demo_task_b_ptr);
     vga_puts("Task A: resumed | ");
-    task_switch_to(&task_table[2]);
+    task_switch_to(demo_task_b_ptr);
     vga_puts("Task A: finished | ");
 }
 
@@ -401,9 +431,9 @@ static void demo_task_a(void *arg) {
 static void demo_task_b(void *arg) {
     (void)arg;
     vga_puts("Task B: start\n");
-    task_switch_to(&task_table[1]);
+    task_switch_to(demo_task_a_ptr);
     vga_puts("Task B: resumed\n");
-    task_switch_to(&task_table[1]);
+    task_switch_to(demo_task_a_ptr);
     vga_puts("Task B: finished\n");
 }
 
@@ -414,17 +444,26 @@ static void demo_task_b(void *arg) {
  * bidirectional context switching, and ensures safe termination.
  */
 void task_run_demo(void) {
-    task_t *ta = task_create_coop(demo_task_a, NULL, "task_a");
-    task_t *tb = task_create_coop(demo_task_b, NULL, "task_b");
+    bool sched_was_enabled = scheduler_is_enabled();
+    if (sched_was_enabled) {
+        scheduler_disable();
+    }
 
-    if (!ta || !tb) {
+    demo_caller_task = task_get_current();
+    demo_task_a_ptr = task_create_coop(demo_task_a, NULL, "task_a");
+    demo_task_b_ptr = task_create_coop(demo_task_b, NULL, "task_b");
+
+    if (!demo_task_a_ptr || !demo_task_b_ptr) {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
         vga_puts("[FAIL] Task creation failed\n");
+        if (sched_was_enabled) {
+            scheduler_enable();
+        }
         return;
     }
 
     /* Switch to Task A: starts the demonstration sequence */
-    task_switch_to(ta);
+    task_switch_to(demo_task_a_ptr);
 
     /*
      * Control returns here once both Task A and Task B have completed
@@ -432,6 +471,14 @@ void task_run_demo(void) {
      */
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("[OK] Manual context switch test completed\n");
+
+    demo_task_a_ptr = NULL;
+    demo_task_b_ptr = NULL;
+    demo_caller_task = NULL;
+
+    if (sched_was_enabled) {
+        scheduler_enable();
+    }
 }
 
 /*

@@ -184,6 +184,27 @@
   - Non-Goals & Scope Limits:
     - No dynamic linker (`.so`), no filesystem/VFS, no `fork()` or `exec()` syscall.
 
+- **Stage 11A: Virtual Filesystem (VFS) Core and In-Memory RAMFS**
+  - Filesystem-Independent VFS Core Abstraction (`vfs.h`, `vfs.c`):
+    - Abstract node representation (`vfs_node_t`) with operation table (`vfs_node_ops_t`: `lookup`, `create`, `mkdir`, `read`, `write`).
+    - Filesystem mount abstraction (`vfs_fs_t`, `vfs_fs_ops_t`: `mount`, `unmount`).
+    - Standardized node types: `VFS_NODE_FILE`, `VFS_NODE_DIRECTORY`, and reserved `VFS_NODE_DEVICE`.
+    - Canonical error codes: `VFS_OK` (0), `VFS_ERR_NOT_FOUND` (-1), `VFS_ERR_INVALID_ARG` (-2), `VFS_ERR_EXISTS` (-3), `VFS_ERR_NOT_DIR` (-4), `VFS_ERR_IS_DIR` (-5), `VFS_ERR_NO_MEM` (-6), `VFS_ERR_NOT_SUPPORTED` (-7), `VFS_ERR_NAME_TOO_LONG` (-8), `VFS_ERR_PATH_TOO_LONG` (-9).
+    - String error decoder: `vfs_strerror()`.
+  - In-Memory RAM Filesystem (`ramfs.h`, `ramfs.c`) mounted at root `/`:
+    - Linked list directory children model (`ramfs_entry_t`).
+    - Deterministic path resolution: absolute paths starting with `/`, collapsing consecutive slashes, validating component names (`<= 32` bytes), path length limit (`<= 256` bytes), rejecting non-directory intermediate traversal.
+    - Strict non-sparse write enforcement: sequential appends and in-place overwrites supported; writes attempting to leave gaps (`offset > size`) rejected with `VFS_ERR_NOT_SUPPORTED`.
+    - Static Root Image & Heap Backward Compatibility:
+      - Initial root structure (`/`, `/bin`, `/etc`, `/readme.txt` with content `"Hello from MyOS RAMFS!\n"`) statically allocated in kernel image.
+      - Keeps kernel heap untouched (`Used: 0 bytes`) at boot to preserve Stage 6, 7A, and 8A regression invariants.
+    - Dynamic Allocations for Runtime Changes:
+      - Runtime file/directory creations (`vfs_create`, `vfs_mkdir`) and file write expansions allocate from kernel heap via `kmalloc`/`kfree`.
+      - Failures cleanly roll back with zero leaked memory.
+  - Shell Command:
+    - `vfstest`: Runs 10-step in-kernel verification suite testing VFS initialization, root mount, root lookup, file lookup, file read, file creation, directory creation, write/read roundtrip, path validation, and heap stability.
+  - Scope Boundaries:
+    - No disk or storage drivers, no block device layer, no FAT/ext2/ext4, no POSIX syscall ABI yet.
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
@@ -305,6 +326,10 @@ MyOS/
         ├── elf.h                # ELF64 structures, constants, loader & test API
         ├── elf.c                # ELF validator, segment loader, BSS zeroing & test suite
         ├── elf_image.S          # Embedded user ELF binary (.incbin)
+        ├── vfs.h                # Virtual filesystem (VFS) interface, node ops & limits
+        ├── vfs.c                # VFS core, root mount, path resolution & test suite
+        ├── ramfs.h              # In-memory RAMFS factory & lifecycle prototypes
+        ├── ramfs.c              # In-memory RAM filesystem implementation & operations
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -335,5 +360,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage10.py
+python3 test_stage11a.py
 ```

@@ -15,6 +15,8 @@
 #include "user.h"
 #include "process.h"
 #include "elf.h"
+#include "vfs.h"
+#include "ramfs.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -79,6 +81,10 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
 
     /* 12. Initialize Kernel Heap */
     heap_init();
+
+    /* 12a. Initialize Virtual File System and RAMFS (Stage 11A) */
+    vfs_init();
+    vfs_mount_root(ramfs_create_fs());
 
     /* 12b. Initialize User Mode Subsystem */
     user_init();

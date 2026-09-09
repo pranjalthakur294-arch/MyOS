@@ -11,6 +11,7 @@
 #include "syscall.h"
 #include "process.h"
 #include "elf.h"
+#include "vfs.h"
 #include <stddef.h>
 
 /*
@@ -67,6 +68,7 @@ static void builtin_syscalltest(const char *args);
 static void builtin_ps(const char *args);
 static void builtin_proctest(const char *args);
 static void builtin_elftest(const char *args);
+static void builtin_vfstest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -94,6 +96,7 @@ static const struct shell_command commands[] = {
     {"ps",          "Process status list",   builtin_ps},
     {"proctest",    "Test process isolation",builtin_proctest},
     {"elftest",     "Test ELF64 loader",     builtin_elftest},
+    {"vfstest",     "Test VFS and RAMFS",    builtin_vfstest},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -116,17 +119,20 @@ static void builtin_help(const char *args) {
         vga_puts(commands[i].description);
         len1 += kstrlen(commands[i].description);
 
-        if (commands[i + 1].name != NULL) {
-            /* Pad to column 40 */
-            while (len1 < 40) {
-                vga_putc(' ');
-                len1++;
-            }
-            /* Column 2 */
-            vga_puts(commands[i + 1].name);
-            vga_puts(" - ");
-            vga_puts(commands[i + 1].description);
+        if (commands[i + 1].name == NULL) {
+            vga_putc('\n');
+            break;
         }
+
+        /* Pad to column 40 */
+        while (len1 < 40) {
+            vga_putc(' ');
+            len1++;
+        }
+        /* Column 2 */
+        vga_puts(commands[i + 1].name);
+        vga_puts(" - ");
+        vga_puts(commands[i + 1].description);
         vga_putc('\n');
     }
 }
@@ -160,6 +166,7 @@ static void builtin_about(const char *args) {
     vga_puts("Syscalls: int 0x80 (SYS_WRITE, SYS_GETTIME)\n");
     vga_puts("Processes: Isolated Address Spaces (CR3) Active\n");
     vga_puts("ELF Loader: ELF64 PT_LOAD Validator Active\n");
+    vga_puts("VFS/RAMFS: In-Memory Virtual Filesystem Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -505,6 +512,23 @@ static void builtin_proctest(const char *args) {
 static void builtin_elftest(const char *args) {
     (void)args;
     elf_print_test_status();
+}
+
+/*
+ * Built-in Command: vfstest
+ * Executes Stage 11A VFS and RAMFS verification test suite.
+ */
+static void builtin_vfstest(const char *args) {
+    (void)args;
+    vga_puts("Running Stage 11A VFS and RAMFS verification suite...\n");
+    int res = vfs_run_tests();
+    if (res == 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("All VFS tests passed successfully!\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("VFS test failure detected!\n");
+    }
 }
 
 /*
