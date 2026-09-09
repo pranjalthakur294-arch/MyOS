@@ -167,7 +167,16 @@ void process_reap_terminated_ex(void *executing_task) {
                 proc->stack_phys = 0;
             }
 
-            /* 3. Free allocated intermediate page table frames */
+            /* 3. Free any recorded user_frames (ELF processes) */
+            for (size_t k = 0; k < proc->user_frame_count; k++) {
+                if (proc->user_frames[k]) {
+                    pmm_free_frame(proc->user_frames[k]);
+                    proc->user_frames[k] = 0;
+                }
+            }
+            proc->user_frame_count = 0;
+
+            /* 4. Free allocated intermediate page table frames */
             for (size_t k = 0; k < proc->table_frame_count; k++) {
                 if (proc->table_frames[k]) {
                     pmm_free_frame(proc->table_frames[k]);

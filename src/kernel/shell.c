@@ -10,6 +10,7 @@
 #include "user.h"
 #include "syscall.h"
 #include "process.h"
+#include "elf.h"
 #include <stddef.h>
 
 /*
@@ -65,6 +66,7 @@ static void builtin_usertest(const char *args);
 static void builtin_syscalltest(const char *args);
 static void builtin_ps(const char *args);
 static void builtin_proctest(const char *args);
+static void builtin_elftest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -91,26 +93,40 @@ static const struct shell_command commands[] = {
     {"syscalltest", "Test system calls",     builtin_syscalltest},
     {"ps",          "Process status list",   builtin_ps},
     {"proctest",    "Test process isolation",builtin_proctest},
+    {"elftest",     "Test ELF64 loader",     builtin_elftest},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
 
 /*
  * Built-in Command: help
- * Iterates through the command table and prints each command and description.
+ * Iterates through the command table and prints commands in two columns
+ * to fit within the 25-row screen budget without scrolling off.
  */
 static void builtin_help(const char *args) {
     (void)args;
     vga_puts("Available commands:\n");
-    for (size_t i = 0; commands[i].name != NULL; i++) {
-        vga_puts("  ");
+    for (size_t i = 0; commands[i].name != NULL; i += 2) {
+        /* Column 1 */
+        vga_puts(" ");
         vga_puts(commands[i].name);
-        size_t name_len = kstrlen(commands[i].name);
-        for (size_t s = name_len; s < 12; s++) {
-            vga_putc(' ');
-        }
-        vga_puts("- ");
+        size_t len1 = 1 + kstrlen(commands[i].name);
+        vga_puts(" - ");
+        len1 += 3;
         vga_puts(commands[i].description);
+        len1 += kstrlen(commands[i].description);
+
+        if (commands[i + 1].name != NULL) {
+            /* Pad to column 40 */
+            while (len1 < 40) {
+                vga_putc(' ');
+                len1++;
+            }
+            /* Column 2 */
+            vga_puts(commands[i + 1].name);
+            vga_puts(" - ");
+            vga_puts(commands[i + 1].description);
+        }
         vga_putc('\n');
     }
 }
@@ -143,6 +159,7 @@ static void builtin_about(const char *args) {
     vga_puts("User Mode: Ring 3 Foundation Active\n");
     vga_puts("Syscalls: int 0x80 (SYS_WRITE, SYS_GETTIME)\n");
     vga_puts("Processes: Isolated Address Spaces (CR3) Active\n");
+    vga_puts("ELF Loader: ELF64 PT_LOAD Validator Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -479,6 +496,15 @@ static void builtin_ps(const char *args) {
 static void builtin_proctest(const char *args) {
     (void)args;
     process_print_test_status();
+}
+
+/*
+ * Built-in Command: elftest
+ * Executes Stage 10 ELF64 loader validation and execution test suite.
+ */
+static void builtin_elftest(const char *args) {
+    (void)args;
+    elf_print_test_status();
 }
 
 /*

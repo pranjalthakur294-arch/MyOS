@@ -153,6 +153,37 @@
   - Architectural Boundaries & Scope:
     - Deliberately does NOT implement an ELF loader (binaries are compiled in kernel and loaded at `0x60000000`), `fork()`/`exec()`, signals, pipes, or a virtual filesystem (VFS).
 
+- **Stage 10: ELF64 Executable Program Loader**
+  - Freestanding 64-bit ELF (`ET_EXEC`) parser, validator, segment loader, and execution engine.
+  - Strict ELF Header Validation:
+    - Magic bytes (`\x7fELF`), 64-bit class (`ELFCLASS64`), little-endian (`ELFDATA2LSB`), current version (`EV_CURRENT`), AMD x86-64 machine type (`EM_X86_64`), executable type (`ET_EXEC`), and non-zero entry point (`e_entry`).
+    - Program header table bounds checking (`phoff`, `phentsize`, `phnum`), rejecting truncated or malformed headers.
+  - Strict `PT_LOAD` Segment Verification:
+    - Virtual addresses bounded strictly to user space `[0x40000000, 0x80000000)`.
+    - Arithmetic overflow protection (`p_vaddr + p_memsz >= p_vaddr`).
+    - Kernel protection: strictly rejects mappings overlapping kernel low memory (`< 0x40000000`) or kernel heap (`0x50000000..0x50010000`).
+    - File boundary enforcement (`p_offset + p_filesz <= file_size`) and memory size constraint (`p_filesz <= p_memsz`).
+    - Page-level segment overlap detection and rejection.
+  - Memory Permissions & W^X Enforcement:
+    - Allocates dedicated physical 4 KiB frames via PMM for each segment page.
+    - Maps pages into the process's private PML4 directory with user privilege (`PTE_PRESENT | PTE_USER`).
+    - Read-only protection for executable code segments (`PF_X` without `PF_W`), read-write protection for data/BSS segments (`PF_W`).
+    - BSS zero-initialization (`p_memsz > p_filesz`) and page-tail zero padding.
+  - Dedicated User Stack & Register State:
+    - 4 KiB user stack allocated at `0x70000000` (`PTE_PRESENT | PTE_USER | PTE_WRITABLE`), stack top at `0x70001000` aligned to 16 bytes per System V ABI.
+    - IRETQ frame configured for Ring 3 entry (`SS=0x1B`, `RSP=0x70001000`, `RFLAGS=0x202`, `CS=0x23`, `RIP=e_entry`).
+  - Process Lifecycle & Dynamic Resource Management:
+    - Tracks up to 16 dynamically allocated user frames per process in `user_frames[]`.
+    - Deferred reaper automatically unmaps and frees all user segment frames, stack frames, private PML4, and kernel stack, achieving 100% leak-free execution.
+  - Embedded User-Space Binary Pipeline:
+    - Freestanding user executable compiled from `user/start.S` and `user/test_program.c` with custom linker script `user/linker.ld`.
+    - Embedded into kernel image via `src/kernel/elf_image.S` using GNU Assembler `.incbin`.
+    - Ring 3 program verifies CPL 3, reads/writes `.data` and `.bss`, invokes `SYS_GETTIME`, executes `SYS_WRITE` ("Hello from loaded ELF64 executable!"), and exits with code 42 via `SYS_EXIT`.
+  - In-Kernel Test Suite & Shell Command:
+    - `elftest`: Runs comprehensive in-kernel test suite with 10 negative validation cases (bad magic, 32-bit class, big-endian, bad machine, non-exec type, bad entry, kernel overlap, heap overlap, address overflow, truncated header) followed by positive ELF loading, Ring 3 execution, exit code 42 verification, and frame reclamation check.
+  - Non-Goals & Scope Limits:
+    - No dynamic linker (`.so`), no filesystem/VFS, no `fork()` or `exec()` syscall.
+
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
@@ -224,6 +255,11 @@ MyOS/
 ├── test_stage8a.py              # Stage 8A automated test suite
 ├── test_stage8b.py              # Stage 8B automated test suite
 ├── test_stage9.py               # Stage 9 automated test suite
+├── test_stage10.py              # Stage 10 automated test suite
+├── user/
+│   ├── linker.ld                # User ELF linker script (PT_LOAD segments at 0x60000000)
+│   ├── start.S                  # User entry point (_start) with int 0x80 SYS_EXIT
+│   └── test_program.c           # Ring 3 user test program (CPL 3, BSS/data, syscalls)
 └── src/
     ├── arch/
     │   └── x86_64/
@@ -266,6 +302,9 @@ MyOS/
         ├── syscall.c            # C syscall dispatcher, sys_write, sys_gettime & validation
         ├── process.h            # Process table, process lifecycle & isolation test interface
         ├── process.c            # Process management, CR3 allocation, reaping & isolation
+        ├── elf.h                # ELF64 structures, constants, loader & test API
+        ├── elf.c                # ELF validator, segment loader, BSS zeroing & test suite
+        ├── elf_image.S          # Embedded user ELF binary (.incbin)
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -296,5 +335,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage9.py
+python3 test_stage10.py
 ```

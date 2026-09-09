@@ -447,10 +447,16 @@ int vmm_create_process_pml4(uint64_t *out_pml4_phys, uint64_t *tables, size_t *t
 
     /* 4. Allocate per-process PD frame for 1 GiB..2 GiB (PDPT[1]) */
     if (*table_count >= max_tables) {
+        pmm_free_frame(proc_pdpt_phys);
+        pmm_free_frame(proc_pml4_phys);
+        *table_count = 0;
         return -3;
     }
     uint64_t *proc_pd = vmm_allocate_table_frame();
     if (!proc_pd) {
+        pmm_free_frame(proc_pdpt_phys);
+        pmm_free_frame(proc_pml4_phys);
+        *table_count = 0;
         return -2;
     }
     uint64_t proc_pd_phys = (uint64_t)proc_pd;

@@ -43,12 +43,23 @@ LDFLAGS := -nostdlib -z max-page-size=0x1000 -T linker.ld
 ASFLAGS := -c
 
 # Sources and Object Files
-C_SRCS   := $(SRC_DIR)/kernel/kernel.c $(SRC_DIR)/kernel/vga.c $(SRC_DIR)/kernel/idt.c $(SRC_DIR)/kernel/pic.c $(SRC_DIR)/kernel/keyboard.c $(SRC_DIR)/kernel/terminal.c $(SRC_DIR)/kernel/shell.c $(SRC_DIR)/kernel/timer.c $(SRC_DIR)/kernel/pmm.c $(SRC_DIR)/kernel/vmm.c $(SRC_DIR)/kernel/heap.c $(SRC_DIR)/kernel/task.c $(SRC_DIR)/kernel/scheduler.c $(SRC_DIR)/kernel/gdt.c $(SRC_DIR)/kernel/user.c $(SRC_DIR)/kernel/syscall.c $(SRC_DIR)/kernel/process.c
-ASM_SRCS := $(SRC_DIR)/arch/x86_64/boot.S $(SRC_DIR)/arch/x86_64/interrupts.S $(SRC_DIR)/arch/x86_64/context_switch.S $(SRC_DIR)/arch/x86_64/user.S
+C_SRCS   := $(SRC_DIR)/kernel/kernel.c $(SRC_DIR)/kernel/vga.c $(SRC_DIR)/kernel/idt.c $(SRC_DIR)/kernel/pic.c \
+            $(SRC_DIR)/kernel/keyboard.c $(SRC_DIR)/kernel/terminal.c $(SRC_DIR)/kernel/shell.c $(SRC_DIR)/kernel/timer.c \
+            $(SRC_DIR)/kernel/pmm.c $(SRC_DIR)/kernel/vmm.c $(SRC_DIR)/kernel/heap.c $(SRC_DIR)/kernel/task.c \
+            $(SRC_DIR)/kernel/scheduler.c $(SRC_DIR)/kernel/gdt.c $(SRC_DIR)/kernel/user.c $(SRC_DIR)/kernel/syscall.c \
+            $(SRC_DIR)/kernel/process.c $(SRC_DIR)/kernel/elf.c
+ASM_SRCS := $(SRC_DIR)/arch/x86_64/boot.S $(SRC_DIR)/arch/x86_64/interrupts.S $(SRC_DIR)/arch/x86_64/context_switch.S \
+            $(SRC_DIR)/arch/x86_64/user.S $(SRC_DIR)/kernel/elf_image.S
 
 C_OBJS   := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(C_SRCS))
 ASM_OBJS := $(patsubst $(SRC_DIR)/%.S, $(BUILD_DIR)/%.o, $(ASM_SRCS))
 OBJS     := $(ASM_OBJS) $(C_OBJS)
+
+# User-space ELF Test Program
+USER_DIR     := user
+USER_BIN     := $(BUILD_DIR)/user/test_program.elf
+USER_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/test_program.o
+USER_LDFLAGS := -nostdlib -z max-page-size=0x1000 -T $(USER_DIR)/linker.ld
 
 # ------------------------------------------------------------------------------
 # Build Targets
@@ -57,13 +68,33 @@ OBJS     := $(ASM_OBJS) $(C_OBJS)
 
 all: $(KERNEL_BIN)
 
+# Compile User-Space ELF Objects
+$(BUILD_DIR)/user/%.o: $(USER_DIR)/%.S
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) $< -o $@
+
+$(BUILD_DIR)/user/%.o: $(USER_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Link User-Space ELF Executable
+$(USER_BIN): $(USER_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) -o $@ $(USER_OBJS)
+	@echo "[SUCCESS] User ELF binary created at $@"
+
+# Ensure embedded ELF assembly depends on the compiled user binary
+$(BUILD_DIR)/kernel/elf_image.o: $(SRC_DIR)/kernel/elf_image.S $(USER_BIN)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -I. $< -o $@
+
 # Link the kernel ELF binary
 $(KERNEL_BIN): $(OBJS) linker.ld
 	@mkdir -p $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 	@echo "[SUCCESS] Kernel binary created at $@"
 
-# Assemble assembly files (.S)
+# Assemble architecture assembly files (.S)
 $(BUILD_DIR)/arch/x86_64/%.o: $(SRC_DIR)/arch/x86_64/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) $< -o $@

@@ -12,6 +12,7 @@
 #include "timer.h"
 #include "user.h"
 #include "process.h"
+#include "elf.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -63,7 +64,10 @@ bool syscall_validate_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, s
 
     if (len == 0) {
         /* Zero-length write with non-NULL pointer: ensure address is in user space */
-        if (start < USER_CODE_VADDR || start >= USER_STACK_TOP) {
+        if (start < USER_SPACE_MIN || start >= USER_SPACE_MAX) {
+            return false;
+        }
+        if (start < KERNEL_HEAP_END && start >= KERNEL_HEAP_START) {
             return false;
         }
         return true;
@@ -76,7 +80,12 @@ bool syscall_validate_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, s
     }
 
     /* Range check: must reside completely within user virtual address space */
-    if (start < USER_CODE_VADDR || end > USER_STACK_TOP) {
+    if (start < USER_SPACE_MIN || end > USER_SPACE_MAX) {
+        return false;
+    }
+
+    /* Exclude kernel heap region [0x50000000, 0x50200000) */
+    if (start < KERNEL_HEAP_END && end > KERNEL_HEAP_START) {
         return false;
     }
 
@@ -124,7 +133,7 @@ bool syscall_validate_writable_user_buffer_in_pml4(uint64_t pml4_phys, const voi
     uint64_t start = (uint64_t)ptr;
 
     if (len == 0) {
-        if (start < USER_CODE_VADDR || start >= USER_STACK_TOP) {
+        if (start < USER_SPACE_MIN || start >= USER_SPACE_MAX) {
             return false;
         }
         return true;
@@ -135,7 +144,12 @@ bool syscall_validate_writable_user_buffer_in_pml4(uint64_t pml4_phys, const voi
         return false;
     }
 
-    if (start < USER_CODE_VADDR || end > USER_STACK_TOP) {
+    if (start < USER_SPACE_MIN || end > USER_SPACE_MAX) {
+        return false;
+    }
+
+    /* Exclude kernel heap region [0x50000000, 0x50200000) */
+    if (start < KERNEL_HEAP_END && end > KERNEL_HEAP_START) {
         return false;
     }
 

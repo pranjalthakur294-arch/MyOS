@@ -32,6 +32,9 @@ typedef enum {
     PROCESS_TYPE_USER
 } process_type_t;
 
+#define MAX_PROCESS_USER_FRAMES  32
+#define MAX_PROCESS_TABLE_FRAMES 16
+
 /*
  * Process Control Block (PCB)
  */
@@ -44,14 +47,17 @@ typedef struct process {
     uint64_t cr3;                           /* Physical address of per-process PML4 root */
     uint64_t user_entry;                    /* User code entry point virtual address */
     uint64_t user_stack_top;                /* User stack top virtual address */
-    uint64_t code_phys;                     /* Physical frame backing user code page */
-    uint64_t stack_phys;                    /* Physical frame backing user stack page */
+    uint64_t code_phys;                     /* Physical frame backing user code page (Stage 9) */
+    uint64_t stack_phys;                    /* Physical frame backing user stack page (Stage 9) */
+    uint64_t user_frames[MAX_PROCESS_USER_FRAMES];   /* All user segment/stack physical frames */
+    size_t user_frame_count;                /* Number of recorded user physical frames */
     uint64_t pml4_phys;                     /* Physical frame for PML4 table */
-    uint64_t table_frames[8];               /* Intermediate page table frames allocated */
+    uint64_t table_frames[MAX_PROCESS_TABLE_FRAMES]; /* Intermediate page table frames allocated */
     size_t table_frame_count;               /* Number of intermediate table frames */
     uint64_t kernel_stack_top;              /* Dedicated TSS.rsp0 stack top */
     int64_t exit_status;                    /* Status code passed to SYS_EXIT */
     bool reaped;                            /* True if physical frames have been reclaimed */
+    bool is_elf;                            /* True if process was loaded from an ELF executable */
 } process_t;
 
 /*
@@ -64,6 +70,7 @@ extern process_t *current_process;
  */
 void process_init(void);
 process_t *process_create(const void *code, size_t code_size, const char *name);
+process_t *process_create_from_elf(const void *image, size_t size, const char *name);
 void process_exit(int64_t status);
 process_t *process_get(uint32_t pid);
 process_t *process_current(void);
