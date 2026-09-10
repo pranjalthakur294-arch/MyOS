@@ -12,6 +12,7 @@
 #include "process.h"
 #include "elf.h"
 #include "vfs.h"
+#include "file.h"
 #include <stddef.h>
 
 /*
@@ -69,6 +70,7 @@ static void builtin_ps(const char *args);
 static void builtin_proctest(const char *args);
 static void builtin_elftest(const char *args);
 static void builtin_vfstest(const char *args);
+static void builtin_fdtest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -97,6 +99,7 @@ static const struct shell_command commands[] = {
     {"proctest",    "Test process isolation",builtin_proctest},
     {"elftest",     "Test ELF64 loader",     builtin_elftest},
     {"vfstest",     "Test VFS and RAMFS",    builtin_vfstest},
+    {"fdtest",      "Test file descriptors", builtin_fdtest},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -167,6 +170,7 @@ static void builtin_about(const char *args) {
     vga_puts("Processes: Isolated Address Spaces (CR3) Active\n");
     vga_puts("ELF Loader: ELF64 PT_LOAD Validator Active\n");
     vga_puts("VFS/RAMFS: In-Memory Virtual Filesystem Active\n");
+    vga_puts("FD Table: Open/Read/Write/Close Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -529,6 +533,15 @@ static void builtin_vfstest(const char *args) {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
         vga_puts("VFS test failure detected!\n");
     }
+}
+
+/*
+ * Built-in Command: fdtest
+ * Executes Stage 11B file descriptor and open/read/write/close verification suite.
+ */
+static void builtin_fdtest(const char *args) {
+    (void)args;
+    fd_run_tests();
 }
 
 /*

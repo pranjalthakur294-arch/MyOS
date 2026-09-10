@@ -130,9 +130,10 @@ isr_syscall:
     /* Align stack to 16 bytes for System V AMD64 ABI (40 + 112 + 8 = 160) */
     subq $8, %rsp
 
-    /* Prepare arguments for C dispatcher: syscall_dispatch(number, arg1, arg2) */
-    movq %rsi, %rdx          /* 3rd arg: arg2 */
-    movq %rdi, %rsi          /* 2nd arg: arg1 */
+    /* Prepare arguments for C dispatcher: syscall_dispatch(number, arg1, arg2, arg3) */
+    movq %rdx, %rcx          /* 4th arg: user arg3 */
+    movq %rsi, %rdx          /* 3rd arg: user arg2 */
+    movq %rdi, %rsi          /* 2nd arg: user arg1 */
     movq %rax, %rdi          /* 1st arg: syscall number */
 
     /* Ensure kernel data segments are active during kernel C execution */
@@ -272,12 +273,30 @@ user_syscall0:
     int $0x80
     ret
 
+.global user_syscall1
+.type user_syscall1, @function
+user_syscall1:
+    movq %rdi, %rax
+    movq %rsi, %rdi
+    int $0x80
+    ret
+
 .global user_syscall2
 .type user_syscall2, @function
 user_syscall2:
     movq %rdi, %rax
     movq %rsi, %rdi
     movq %rdx, %rsi
+    int $0x80
+    ret
+
+.global user_syscall3
+.type user_syscall3, @function
+user_syscall3:
+    movq %rdi, %rax
+    movq %rsi, %rdi
+    movq %rdx, %rsi
+    movq %rcx, %rdx
     int $0x80
     ret
 

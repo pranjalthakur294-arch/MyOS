@@ -493,6 +493,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
 
     process_t *proc = process_get((uint32_t)slot);
     kmemset(proc, 0, sizeof(process_t));
+    fd_init_process(proc);
 
     /* 3. Create process PML4 directory with kernel identity mappings cloned */
     uint64_t pml4_phys = 0;

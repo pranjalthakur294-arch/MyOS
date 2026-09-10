@@ -13,6 +13,8 @@
 #include "user.h"
 #include "process.h"
 #include "elf.h"
+#include "file.h"
+#include "vfs.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -188,17 +190,71 @@ bool syscall_validate_writable_user_buffer(const void *ptr, size_t len) {
 }
 
 /*
- * sys_write - Prints a buffer to the screen through the kernel VGA subsystem.
+ * syscall_copy_user_path - Safely copy a null-terminated string from user space
+ * into a kernel buffer.
  *
- * Parameters:
- *   user_buffer - Pointer to character buffer in user memory.
- *   length      - Number of bytes to print.
- *
+ * Validates each byte against the active process address space (or PML4).
+ * Enforces max_len bound (including null terminator).
  * Returns:
- *   Number of bytes printed on success.
- *   -SYSCALL_EFAULT on invalid pointer or protection violation.
+ *   0 on success (kernel_buf contains valid null-terminated path)
+ *   SYSCALL_EFAULT on invalid pointer, unmapped page, supervisor page, or heap violation
+ *   SYSCALL_EINVAL on NULL arguments or unterminated string within max_len
  */
-int64_t sys_write(const char *user_buffer, size_t length) {
+int syscall_copy_user_path(const char *user_path, char *kernel_buf, size_t max_len) {
+    if (user_path == NULL || kernel_buf == NULL || max_len == 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    uint64_t cr3 = vmm_read_cr3() & PTE_ADDR_MASK;
+    process_t *curr = process_current();
+    if (curr && curr->cr3 != 0) {
+        cr3 = curr->cr3 & PTE_ADDR_MASK;
+    }
+
+    uint64_t last_validated_page = 0;
+    bool page_validated = false;
+
+    for (size_t i = 0; i < max_len; i++) {
+        uint64_t vaddr = (uint64_t)(user_path + i);
+
+        /* Range check: must reside within user virtual address space */
+        if (vaddr < USER_SPACE_MIN || vaddr >= USER_SPACE_MAX) {
+            return SYSCALL_EFAULT;
+        }
+
+        /* Exclude kernel heap region */
+        if (vaddr < KERNEL_HEAP_END && vaddr >= KERNEL_HEAP_START) {
+            return SYSCALL_EFAULT;
+        }
+
+        /* Verify page mapping in active PML4 */
+        uint64_t page_addr = vaddr & ~(VMM_PAGE_SIZE - 1);
+        if (!page_validated || page_addr != last_validated_page) {
+            uint64_t flags = 0;
+            if (vmm_get_page_flags_in_pml4(cr3, page_addr, &flags) != 0) {
+                return SYSCALL_EFAULT;
+            }
+            if (!(flags & PTE_PRESENT) || !(flags & PTE_USER)) {
+                return SYSCALL_EFAULT;
+            }
+            last_validated_page = page_addr;
+            page_validated = true;
+        }
+
+        char c = user_path[i];
+        kernel_buf[i] = c;
+        if (c == '\0') {
+            return 0;
+        }
+    }
+
+    return SYSCALL_EINVAL; /* Unterminated within max_len */
+}
+
+/*
+ * sys_write_legacy - Prints a buffer directly to the screen via VGA subsystem (Stage 8B/9/10).
+ */
+static int64_t sys_write_legacy(const char *user_buffer, size_t length) {
     if (user_buffer == NULL) {
         return SYSCALL_EFAULT;
     }
@@ -214,12 +270,137 @@ int64_t sys_write(const char *user_buffer, size_t length) {
         return SYSCALL_EFAULT;
     }
 
-    /* Safely output validated user characters via kernel VGA subsystem */
     for (size_t i = 0; i < length; i++) {
         vga_putc(user_buffer[i]);
     }
 
     return (int64_t)length;
+}
+
+/*
+ * sys_write - Dual-mode write system call handler.
+ *
+ * Supports both:
+ *   1. Stage 11B modern 3-argument call: sys_write(fd, buf, count)
+ *   2. Legacy 2-argument call: sys_write(buf, count)
+ */
+int64_t sys_write(int64_t fd_or_buf, const void *buf_or_len, size_t count_or_zero) {
+    /* Case 1: Pointer in user space -> Legacy 2-arg write(buf, len) */
+    if ((uint64_t)fd_or_buf >= USER_SPACE_MIN && (uint64_t)fd_or_buf < USER_SPACE_MAX) {
+        return sys_write_legacy((const char *)fd_or_buf, (size_t)buf_or_len);
+    }
+
+    /* Case 2: Null pointer passed in legacy 2-arg write(NULL, len) */
+    if (fd_or_buf == 0 && (uint64_t)buf_or_len < USER_SPACE_MIN) {
+        if (buf_or_len == NULL) {
+            return SYSCALL_EFAULT;
+        }
+        return SYSCALL_EFAULT;
+    }
+
+    /* Case 3: Modern 3-arg write(fd, buf, count) */
+    int64_t fd = fd_or_buf;
+    const void *user_buffer = buf_or_len;
+    size_t count = count_or_zero;
+
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    if (count == 0) {
+        if (user_buffer != NULL) {
+            if (!syscall_validate_user_buffer(user_buffer, 0)) {
+                return SYSCALL_EFAULT;
+            }
+        }
+        return 0;
+    }
+
+    if (user_buffer == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (!syscall_validate_user_buffer(user_buffer, count)) {
+        return SYSCALL_EFAULT;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    return fd_write(curr, (int)fd, user_buffer, count);
+}
+
+/*
+ * sys_open - Open a file by VFS path with specified access mode.
+ */
+int64_t sys_open(const char *user_path, uint64_t flags) {
+    process_t *curr = process_current();
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (user_path == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    char kernel_path[VFS_PATH_MAX];
+    int copy_res = syscall_copy_user_path(user_path, kernel_path, sizeof(kernel_path));
+    if (copy_res != 0) {
+        return (int64_t)copy_res;
+    }
+
+    return (int64_t)fd_open(curr, kernel_path, (uint32_t)flags);
+}
+
+/*
+ * sys_read - Read from an open file descriptor into user buffer.
+ */
+int64_t sys_read(int64_t fd, void *user_buf, size_t count) {
+    process_t *curr = process_current();
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    if (count == 0) {
+        if (user_buf != NULL) {
+            if (!syscall_validate_writable_user_buffer(user_buf, 0)) {
+                return SYSCALL_EFAULT;
+            }
+        }
+        return 0;
+    }
+
+    if (user_buf == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (!syscall_validate_writable_user_buffer(user_buf, count)) {
+        return SYSCALL_EFAULT;
+    }
+
+    return fd_read(curr, (int)fd, user_buf, count);
+}
+
+/*
+ * sys_close - Close an open file descriptor.
+ */
+int64_t sys_close(int64_t fd) {
+    process_t *curr = process_current();
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    return (int64_t)fd_close(curr, (int)fd);
 }
 
 /*
@@ -249,20 +430,30 @@ int64_t sys_exit(int64_t status) {
  *   number - Syscall number from RAX
  *   arg1   - Argument 1 from RDI
  *   arg2   - Argument 2 from RSI
+ *   arg3   - Argument 3 from RDX
  *
  * Returns:
  *   Signed 64-bit result passed back to Ring 3 in RAX.
  */
-int64_t syscall_dispatch(uint64_t number, uint64_t arg1, uint64_t arg2) {
+int64_t syscall_dispatch(uint64_t number, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
     switch (number) {
         case SYS_EXIT:
             return sys_exit((int64_t)arg1);
 
         case SYS_WRITE:
-            return sys_write((const char *)arg1, (size_t)arg2);
+            return sys_write((int64_t)arg1, (const void *)arg2, (size_t)arg3);
 
         case SYS_GETTIME:
             return sys_gettime();
+
+        case SYS_OPEN:
+            return sys_open((const char *)arg1, arg2);
+
+        case SYS_READ:
+            return sys_read((int64_t)arg1, (void *)arg2, (size_t)arg3);
+
+        case SYS_CLOSE:
+            return sys_close((int64_t)arg1);
 
         default:
             return SYSCALL_ENOSYS;

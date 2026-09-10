@@ -85,6 +85,7 @@ void process_init(void) {
     proc_table[0].cr3 = vmm_get_boot_cr3();
     proc_table[0].task = task_get_current();
     proc_table[0].reaped = false;
+    fd_init_process(&proc_table[0]);
 
     /* Remaining slots 1..MAX_PROCESSES-1 are initially unused */
     for (int i = 1; i < MAX_PROCESSES; i++) {
@@ -92,6 +93,7 @@ void process_init(void) {
         proc_table[i].state = PROCESS_UNUSED;
         proc_table[i].type = PROCESS_TYPE_USER;
         proc_table[i].reaped = false;
+        fd_init_process(&proc_table[i]);
     }
 
     current_process = NULL;
@@ -154,6 +156,9 @@ void process_reap_terminated_ex(void *executing_task) {
             if (current_process == proc) {
                 continue;
             }
+
+            /* 0. Release all process-owned open file descriptors */
+            fd_close_all(proc);
 
             /* 1. Free user code physical frame */
             if (proc->code_phys) {
@@ -322,6 +327,7 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
 
     process_t *proc = &proc_table[slot];
     kmemset(proc, 0, sizeof(process_t));
+    fd_init_process(proc);
 
     /* 2. Allocate user code physical frame */
     uint64_t code_phys = pmm_alloc_frame();

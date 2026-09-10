@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "task.h"
+#include "file.h"
 
 /*
  * Maximum number of processes supported concurrently.
@@ -58,6 +59,7 @@ typedef struct process {
     int64_t exit_status;                    /* Status code passed to SYS_EXIT */
     bool reaped;                            /* True if physical frames have been reclaimed */
     bool is_elf;                            /* True if process was loaded from an ELF executable */
+    open_file_t *fds[MAX_PROCESS_FDS];      /* Per-process file descriptor table (Stage 11B) */
 } process_t;
 
 /*

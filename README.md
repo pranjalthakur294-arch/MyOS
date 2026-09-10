@@ -205,6 +205,26 @@
     - `vfstest`: Runs 10-step in-kernel verification suite testing VFS initialization, root mount, root lookup, file lookup, file read, file creation, directory creation, write/read roundtrip, path validation, and heap stability.
   - Scope Boundaries:
     - No disk or storage drivers, no block device layer, no FAT/ext2/ext4, no POSIX syscall ABI yet.
+- **Stage 11B — File Descriptors + Open/Read/Write/Close (Completed)**:
+  - Three-Tier File Abstraction:
+    - Layer 1 (`vfs_node_t`): Underlying filesystem object in RAMFS.
+    - Layer 2 (`open_file_t`): Active file session with independent cursor `offset`, `flags` (`O_RDONLY`, `O_WRONLY`, `O_RDWR`), `refcount`, and `type` (`OPEN_FILE_VFS`, `OPEN_FILE_CONSOLE`).
+    - Layer 3 (`file descriptor`): Integer handle in per-process table `fds[MAX_PROCESS_FDS]` (0..15).
+  - Standard Streams:
+    - FDs 0 (stdin), 1 (stdout), and 2 (stderr) initialized for all processes with statically pre-allocated console stream objects (0 heap allocation at boot).
+    - Writes to stdout/stderr route to VGA text subsystem; reads from stdin return EOF (0).
+  - System Calls:
+    - `SYS_OPEN` (3): Resolves VFS path, allocates lowest available FD (`fd >= 3`), returns FD or negative error.
+    - `SYS_READ` (4): Reads from open FD starting at current `offset`, advances cursor by bytes read, validates user buffer is mapped and writable in active PML4. Rejects directory read with `EISDIR` (-7).
+    - `SYS_WRITE` (1): Seamless dual-mode dispatcher supporting both modern 3-arg `sys_write(fd, buf, count)` and legacy 2-arg `sys_write(buf, count)` without regressions. Enforces `O_WRONLY` permission (`EACCES` on read-only FDs).
+    - `SYS_CLOSE` (5): Closes FD, decrements `refcount`, frees dynamic `open_file_t`, and clears slot for immediate reuse.
+  - Security & Isolation:
+    - Strict path copying and pointer validation (`syscall_copy_user_path`, `syscall_validate_user_buffer`, `syscall_validate_writable_user_buffer`).
+    - Dedicated per-process FD tables: operations in Process A do not mutate or expose descriptors in Process B.
+    - Clean process teardown: `fd_close_all()` reclaims all open files on process exit or deferred reaping.
+  - Verification & Shell:
+    - `fdtest`: In-kernel verification suite testing 10 architectural checkpoints.
+    - Updated `about` and `help` commands.
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
@@ -277,6 +297,8 @@ MyOS/
 ├── test_stage8b.py              # Stage 8B automated test suite
 ├── test_stage9.py               # Stage 9 automated test suite
 ├── test_stage10.py              # Stage 10 automated test suite
+├── test_stage11a.py             # Stage 11A automated test suite
+├── test_stage11b.py             # Stage 11B automated test suite
 ├── user/
 │   ├── linker.ld                # User ELF linker script (PT_LOAD segments at 0x60000000)
 │   ├── start.S                  # User entry point (_start) with int 0x80 SYS_EXIT
@@ -330,6 +352,8 @@ MyOS/
         ├── vfs.c                # VFS core, root mount, path resolution & test suite
         ├── ramfs.h              # In-memory RAMFS factory & lifecycle prototypes
         ├── ramfs.c              # In-memory RAM filesystem implementation & operations
+        ├── file.h               # File descriptor table, open_file objects & API
+        ├── file.c               # FD table implementation, standard streams & tests
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -360,5 +384,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage11a.py
+python3 test_stage11b.py
 ```
