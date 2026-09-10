@@ -224,7 +224,36 @@
     - Clean process teardown: `fd_close_all()` reclaims all open files on process exit or deferred reaping.
   - Verification & Shell:
     - `fdtest`: In-kernel verification suite testing 10 architectural checkpoints.
-    - Updated `about` and `help` commands.
+- **Stage 11C: Filesystem-Backed ELF Execution**
+  - Storage-Independent ELF Execution Pipeline:
+    - Decoupled `elf.c` from compile-time embedded linker symbols (`_binary_test_program_elf_start`), transforming the loader into a pure, storage-agnostic subsystem operating on buffers read dynamically from the VFS.
+    - Added `process_exec_path(const char *path, const char *name)` and `elf_exec_path(const char *path, const char *name)` in `elf.c` / `elf.h`.
+    - Internal execution flow:
+      1. Open target executable via `fd_open(current_process, path, O_RDONLY)`.
+      2. Verify target is a regular file (reject directories with `ELF_ERR_IS_DIR`).
+      3. Query file size via `fd_get_size(current_process, fd)`.
+      4. Allocate temporary kernel buffer via `kmalloc(size)`.
+      5. Read entire executable into memory via `fd_read(current_process, fd, buf, size)`.
+      6. Close file descriptor via `fd_close(current_process, fd)` immediately.
+      7. Validate ELF64 headers and segments (`elf_validate`).
+      8. Instantiate isolated Ring 3 process (`process_create_from_elf`).
+      9. Free temporary kernel buffer via `kfree(buf)` prior to scheduling.
+  - VFS and RAMFS Executable Population:
+    - Boot-time static initialization of `/bin/test` referencing freestanding user ELF bytes, size, and permissions (`0755`).
+    - Boot-time static initialization of `/bin/bad` with corrupted header bytes and size 16 (`0644`) for negative testing.
+    - Boot-time static descriptors guarantee zero heap allocations during boot (`Used: 0 bytes`, `Free: 65512 bytes`), strictly preserving Stage 6 heap invariants.
+  - File Descriptor Inspection Helper:
+    - Added `fd_get_size(void *proc_ptr, int fd)` in `file.h` / `file.c` to retrieve open file size directly from underlying `vfs_node_t` (`-SYSCALL_EBADF` on invalid descriptors).
+  - Multi-Process Concurrency & Memory Isolation:
+    - Executing `/bin/test` concurrently spawns independent processes with distinct PIDs, dedicated CR3 roots, and private physical frames.
+    - Verified complete memory reclamation upon process termination (exit code 42) via deferred reaper (`process_reap_terminated`).
+  - Interactive Shell Execution:
+    - Added built-in shell command `run <path>`:
+      - Usage reporting when path argument is omitted (`Usage: run <path>`).
+      - Informative diagnostics on missing files (`File not found: <path>`), directories (`Cannot execute directory: <path>`), and malformed binaries (`ELF load failed: <path> (<error>)`).
+      - Compact 2-column layout in `help` to strictly maintain the 25-row screen display budget.
+  - Automated Verification Suite:
+    - `test_stage11c.py`: Comprehensive 10-test automated suite verifying command usage, non-existent file rejection, directory execution rejection, corrupted ELF rejection, `/bin/test` execution to exit code 42, dual-process concurrency/isolation, `run /bin/test` shell execution, storage independence (zero embedded symbols in `elf.o`), and post-execution heap stability.
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
@@ -299,6 +328,7 @@ MyOS/
 ├── test_stage10.py              # Stage 10 automated test suite
 ├── test_stage11a.py             # Stage 11A automated test suite
 ├── test_stage11b.py             # Stage 11B automated test suite
+├── test_stage11c.py             # Stage 11C automated test suite
 ├── user/
 │   ├── linker.ld                # User ELF linker script (PT_LOAD segments at 0x60000000)
 │   ├── start.S                  # User entry point (_start) with int 0x80 SYS_EXIT
@@ -384,5 +414,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage11b.py
+python3 test_stage11c.py
 ```

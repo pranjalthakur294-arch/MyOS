@@ -17,6 +17,10 @@
 #include "gdt.h"
 #include "task.h"
 #include "scheduler.h"
+#include "file.h"
+#include "vfs.h"
+#include "heap.h"
+#include "syscall.h"
 
 static void kmemcpy(void *dest, const void *src, size_t n) {
     uint8_t *d = (uint8_t *)dest;
@@ -112,6 +116,16 @@ const char *elf_strerror(int err) {
             return "Virtual memory page mapping failed";
         case ELF_ERR_BAD_ALIGNMENT:
             return "Malformed segment alignment";
+        case ELF_ERR_OPEN_FAILED:
+            return "Failed to open executable file";
+        case ELF_ERR_READ_FAILED:
+            return "Failed to read executable file";
+        case ELF_ERR_FILE_TOO_LARGE:
+            return "Executable exceeds maximum supported size";
+        case ELF_ERR_NOT_FOUND:
+            return "File not found";
+        case ELF_ERR_IS_DIR:
+            return "Path is a directory";
         default:
             return "Unknown ELF error";
     }
@@ -559,7 +573,126 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     return proc;
 }
 
+/*
+ * process_exec_path - Loads an ELF executable through the VFS and FD abstraction
+ * and instantiates a new user-mode process with isolated private address space.
+ *
+ * Sequence:
+ *   1. Resolve path through VFS and open via fd_open(caller, path, O_RDONLY)
+ *   2. Determine file size via generic fd_get_size()
+ *   3. Allocate temporary buffer from kernel heap
+ *   4. Read complete executable through fd_read()
+ *   5. Close file descriptor (fd_close)
+ *   6. Strictly validate ELF headers and PT_LOAD segment bounds (elf_validate)
+ *   7. Create process, private CR3, map segments, and establish user stack
+ *   8. Free temporary buffer immediately (kfree)
+ *   9. Return newly created process pointer or negative error code
+ */
+int process_exec_path(const char *path, const char *name, struct process **out_proc) {
+    if (out_proc != NULL) {
+        *out_proc = NULL;
+    }
+    if (path == NULL || path[0] == '\0') {
+        return VFS_ERR_INVALID;
+    }
+
+    process_t *caller = process_current();
+    if (!caller) {
+        caller = process_get(0);
+        if (!caller) {
+            return ELF_ERR_NO_MEMORY;
+        }
+    }
+
+    /* 1. Open executable file descriptor */
+    int fd = fd_open(caller, path, O_RDONLY);
+    if (fd < 0) {
+        if (fd == SYSCALL_ENOENT) {
+            return ELF_ERR_NOT_FOUND;
+        } else if (fd == SYSCALL_EISDIR) {
+            return ELF_ERR_IS_DIR;
+        } else if (fd == SYSCALL_EMFILE) {
+            return SYSCALL_EMFILE;
+        }
+        return ELF_ERR_OPEN_FAILED;
+    }
+
+    /* Check if target node is a directory */
+    open_file_t *of = caller->fds[fd];
+    if (of != NULL && of->type == OPEN_FILE_VFS && of->node != NULL) {
+        if (of->node->type == VFS_NODE_DIRECTORY) {
+            fd_close(caller, fd);
+            return ELF_ERR_IS_DIR;
+        }
+    }
+
+    /* 2. Determine file size through generic FD operation */
+    int64_t file_size = fd_get_size(caller, fd);
+    if (file_size < (int64_t)sizeof(Elf64_Ehdr)) {
+        fd_close(caller, fd);
+        return ELF_ERR_TOO_SMALL;
+    }
+    if (file_size > (int64_t)ELF_MAX_EXEC_SIZE) {
+        fd_close(caller, fd);
+        return ELF_ERR_FILE_TOO_LARGE;
+    }
+
+    size_t sz = (size_t)file_size;
+
+    /* 3. Allocate temporary buffer from kernel heap */
+    uint8_t *buf = (uint8_t *)kmalloc(sz);
+    if (!buf) {
+        fd_close(caller, fd);
+        return ELF_ERR_NO_MEMORY;
+    }
+
+    /* 4. Read complete file bytes through FD */
+    size_t total_read = 0;
+    while (total_read < sz) {
+        int64_t n = fd_read(caller, fd, buf + total_read, sz - total_read);
+        if (n <= 0) {
+            break;
+        }
+        total_read += (size_t)n;
+    }
+
+    /* Descriptor is closed immediately after reading */
+    fd_close(caller, fd);
+
+    if (total_read != sz) {
+        kfree(buf);
+        return ELF_ERR_READ_FAILED;
+    }
+
+    /* 5. Validate ELF64 image */
+    int val = elf_validate(buf, sz);
+    if (val != ELF_OK) {
+        kfree(buf);
+        return val;
+    }
+
+    /* 6. Create process with private CR3 and mapped PT_LOAD segments */
+    process_t *proc = process_create_from_elf(buf, sz, name ? name : path);
+
+    /* 7. Free temporary ELF buffer immediately after segment mapping */
+    kfree(buf);
+
+    if (!proc) {
+        return ELF_ERR_MAP_FAILED;
+    }
+
+    if (out_proc != NULL) {
+        *out_proc = proc;
+    }
+    return 0;
+}
+
+int elf_exec_path(const char *path, const char *name, struct process **out_proc) {
+    return process_exec_path(path, name, out_proc);
+}
+
 #define SYNTH_ELF_MAX 16384
+static uint8_t valid_elf_buf[SYNTH_ELF_MAX] __attribute__((aligned(16)));
 static uint8_t synth_elf[SYNTH_ELF_MAX] __attribute__((aligned(16)));
 
 /*
@@ -569,8 +702,27 @@ static uint8_t synth_elf[SYNTH_ELF_MAX] __attribute__((aligned(16)));
  * Returns 0 on complete pass, negative error code on failure.
  */
 int elf_run_validation_tests(void) {
-    const void *valid_elf = (const void *)_binary_test_program_elf_start;
-    size_t valid_size = (size_t)(_binary_test_program_elf_end - _binary_test_program_elf_start);
+    process_t *caller = process_current();
+    if (!caller) caller = process_get(0);
+    if (!caller) return -100;
+
+    /* Obtain valid base ELF binary by reading /bin/test through VFS/FD abstraction */
+    int fd = fd_open(caller, "/bin/test", O_RDONLY);
+    if (fd < 0) {
+        return -101;
+    }
+    int64_t file_size = fd_get_size(caller, fd);
+    if (file_size < (int64_t)sizeof(Elf64_Ehdr) || file_size > (int64_t)SYNTH_ELF_MAX) {
+        fd_close(caller, fd);
+        return -102;
+    }
+    size_t valid_size = (size_t)file_size;
+    int64_t nread = fd_read(caller, fd, valid_elf_buf, valid_size);
+    fd_close(caller, fd);
+    if (nread != (int64_t)valid_size) {
+        return -103;
+    }
+    const void *valid_elf = valid_elf_buf;
 
     /* 1. Valid ELF image validation */
     if (elf_validate(valid_elf, valid_size) != ELF_OK) {
@@ -730,11 +882,29 @@ int elf_run_validation_tests(void) {
         return -16; /* Leaked memory on validation failure */
     }
 
-    /* 18. Test valid ELF process creation and page permissions */
+    /* 18. Test valid ELF process creation via filesystem-backed path and page permissions */
     free_before = pmm_get_free_frames();
-    process_t *proc = process_create_from_elf(valid_elf, valid_size, "elf_test");
-    if (!proc) {
+    process_t *proc = NULL;
+    int exec_res = process_exec_path("/bin/test", "elf_test", &proc);
+    if (exec_res != 0 || !proc) {
         return -17;
+    }
+
+    /* Test second process created concurrently from the same /bin/test */
+    process_t *proc2 = NULL;
+    int exec_res2 = process_exec_path("/bin/test", "elf_test2", &proc2);
+    if (exec_res2 != 0 || !proc2) {
+        return -17;
+    }
+
+    /* Verify process isolation: distinct PID, CR3, and physical frames */
+    if (proc->pid == proc2->pid || proc->cr3 == proc2->cr3) {
+        return -17;
+    }
+    if (proc->user_frame_count > 0 && proc2->user_frame_count > 0) {
+        if (proc->user_frames[0] == proc2->user_frames[0]) {
+            return -17;
+        }
     }
 
     /* Verify process entry point matches ELF e_entry */
@@ -776,18 +946,19 @@ int elf_run_validation_tests(void) {
         return -25;
     }
 
-    /* 18. Allow process to execute in Ring 3 under timer-driven scheduler */
+    /* 18. Allow processes to execute in Ring 3 under timer-driven scheduler */
     __asm__ volatile ("sti");
     uint64_t start_tick = timer_get_ticks();
-    while ((timer_get_ticks() - start_tick) < 200) {
-        if (proc->state == PROCESS_TERMINATED || proc->reaped) {
+    while ((timer_get_ticks() - start_tick) < 300) {
+        if ((proc->state == PROCESS_TERMINATED || proc->reaped) &&
+            (proc2->state == PROCESS_TERMINATED || proc2->reaped)) {
             break;
         }
         __asm__ volatile ("hlt");
     }
 
     /* Confirm clean exit with expected status (42) */
-    if (proc->exit_status != 42) {
+    if (proc->exit_status != 42 || proc2->exit_status != 42) {
         return -26;
     }
 
@@ -809,11 +980,23 @@ int elf_run_validation_tests(void) {
 void elf_print_test_status(void) {
     vga_puts("\nELF64 Loader Security & Execution Test:\n");
 
-    const void *valid_elf = (const void *)_binary_test_program_elf_start;
-    size_t valid_size = (size_t)(_binary_test_program_elf_end - _binary_test_program_elf_start);
+    process_t *caller = process_current();
+    if (!caller) caller = process_get(0);
 
-    /* 1. Validate image */
-    int val = elf_validate(valid_elf, valid_size);
+    int val = ELF_ERR_OPEN_FAILED;
+    if (caller) {
+        int fd = fd_open(caller, "/bin/test", O_RDONLY);
+        if (fd >= 0) {
+            int64_t file_size = fd_get_size(caller, fd);
+            if (file_size >= (int64_t)sizeof(Elf64_Ehdr) && file_size <= (int64_t)SYNTH_ELF_MAX) {
+                int64_t nread = fd_read(caller, fd, valid_elf_buf, (size_t)file_size);
+                if (nread == file_size) {
+                    val = elf_validate(valid_elf_buf, (size_t)file_size);
+                }
+            }
+            fd_close(caller, fd);
+        }
+    }
     vga_puts("  ELF64 header check:   ");
     if (val == ELF_OK) {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));

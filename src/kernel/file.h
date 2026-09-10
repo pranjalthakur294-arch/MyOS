@@ -52,6 +52,7 @@ int fd_open(void *proc_ptr, const char *path, uint32_t flags);
 int64_t fd_read(void *proc_ptr, int fd, void *buf, size_t count);
 int64_t fd_write(void *proc_ptr, int fd, const void *buf, size_t count);
 int fd_close(void *proc_ptr, int fd);
+int64_t fd_get_size(void *proc_ptr, int fd);
 void fd_close_all(void *proc_ptr);
 int fd_run_tests(void);
 

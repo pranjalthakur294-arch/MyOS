@@ -155,11 +155,14 @@ typedef struct {
 #define ELF_ERR_TABLE_LIMIT               -25
 #define ELF_ERR_MAP_FAILED                -26
 #define ELF_ERR_BAD_ALIGNMENT             -27
+#define ELF_ERR_OPEN_FAILED               -28
+#define ELF_ERR_READ_FAILED               -29
+#define ELF_ERR_FILE_TOO_LARGE            -30
+#define ELF_ERR_NOT_FOUND                 -40
+#define ELF_ERR_IS_DIR                    -41
 
-/* Embedded user-space ELF image symbols exported by elf_image.S */
-extern const uint8_t _binary_test_program_elf_start[];
-extern const uint8_t _binary_test_program_elf_end[];
-extern const uint64_t _binary_test_program_elf_size;
+/* Maximum ELF executable file size supported in Stage 11C (64 KiB) */
+#define ELF_MAX_EXEC_SIZE                 65536ULL
 
 struct process; /* Forward declaration */
 
@@ -173,7 +176,13 @@ int elf_load_into_process(struct process *proc, const void *image, size_t size, 
 struct process *process_create_from_elf(const void *image, size_t size, const char *name);
 
 /*
- * Stage 10 Security & Validation In-Kernel Test Harness
+ * Filesystem-Backed Execution APIs (Stage 11C)
+ */
+int process_exec_path(const char *path, const char *name, struct process **out_proc);
+int elf_exec_path(const char *path, const char *name, struct process **out_proc);
+
+/*
+ * Stage 10 & 11C Security & Validation In-Kernel Test Harness
  */
 int elf_run_validation_tests(void);
 void elf_print_test_status(void);

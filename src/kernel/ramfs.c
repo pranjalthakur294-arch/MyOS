@@ -102,6 +102,18 @@ static ramfs_node_t static_bin;
 static ramfs_node_t static_etc;
 static ramfs_node_t static_readme;
 
+/* Embedded user-space ELF image symbols exported by elf_image.S */
+extern const uint8_t _binary_test_program_elf_start[];
+extern const uint8_t _binary_test_program_elf_end[];
+extern const uint64_t _binary_test_program_elf_size;
+
+static ramfs_node_t static_bin_test;
+static ramfs_dirent_t static_dirent_bin_test;
+
+static ramfs_node_t static_bin_bad;
+static ramfs_dirent_t static_dirent_bin_bad;
+static uint8_t static_bad_elf_content[32] = "NOT_AN_ELF_FILE\n";
+
 static ramfs_dirent_t static_dirent_bin;
 static ramfs_dirent_t static_dirent_etc;
 static ramfs_dirent_t static_dirent_readme;
@@ -454,7 +466,46 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_bin.vfs_node.fs = &static_fs;
     static_bin.vfs_node.internal_data = &static_bin;
     static_bin.is_static = true;
-    static_bin.dir.children_head = NULL;
+
+    /* Initialize static /bin/test executable */
+    size_t test_elf_size = (size_t)(_binary_test_program_elf_end - _binary_test_program_elf_start);
+    kstrncpy(static_bin_test.vfs_node.name, "test", VFS_NAME_MAX);
+    static_bin_test.vfs_node.type = VFS_NODE_FILE;
+    static_bin_test.vfs_node.size = test_elf_size;
+    static_bin_test.vfs_node.permissions = 0755;
+    static_bin_test.vfs_node.ops = &ramfs_node_ops;
+    static_bin_test.vfs_node.fs = &static_fs;
+    static_bin_test.vfs_node.internal_data = &static_bin_test;
+    static_bin_test.is_static = true;
+    static_bin_test.file.data = (uint8_t *)_binary_test_program_elf_start;
+    static_bin_test.file.capacity = test_elf_size;
+    static_bin_test.file.data_is_static = true;
+
+    /* Initialize static /bin/bad corrupted ELF file for error handling verification */
+    kstrncpy(static_bin_bad.vfs_node.name, "bad", VFS_NAME_MAX);
+    static_bin_bad.vfs_node.type = VFS_NODE_FILE;
+    static_bin_bad.vfs_node.size = 16;
+    static_bin_bad.vfs_node.permissions = 0644;
+    static_bin_bad.vfs_node.ops = &ramfs_node_ops;
+    static_bin_bad.vfs_node.fs = &static_fs;
+    static_bin_bad.vfs_node.internal_data = &static_bin_bad;
+    static_bin_bad.is_static = true;
+    static_bin_bad.file.data = static_bad_elf_content;
+    static_bin_bad.file.capacity = sizeof(static_bad_elf_content);
+    static_bin_bad.file.data_is_static = true;
+
+    /* Link entries into /bin: /bin/test -> /bin/bad -> NULL */
+    kstrncpy(static_dirent_bin_bad.name, "bad", VFS_NAME_MAX);
+    static_dirent_bin_bad.node = &static_bin_bad.vfs_node;
+    static_dirent_bin_bad.is_static = true;
+    static_dirent_bin_bad.next = NULL;
+
+    kstrncpy(static_dirent_bin_test.name, "test", VFS_NAME_MAX);
+    static_dirent_bin_test.node = &static_bin_test.vfs_node;
+    static_dirent_bin_test.is_static = true;
+    static_dirent_bin_test.next = &static_dirent_bin_bad;
+
+    static_bin.dir.children_head = &static_dirent_bin_test;
 
     /* Initialize static /etc directory */
     kstrncpy(static_etc.vfs_node.name, "etc", VFS_NAME_MAX);

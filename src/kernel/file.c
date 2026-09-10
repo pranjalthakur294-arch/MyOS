@@ -305,6 +305,30 @@ int fd_close(void *proc_ptr, int fd) {
 }
 
 /*
+ * fd_get_size - Retrieves the total file size in bytes for an open file descriptor.
+ * Returns file size on success, 0 for character streams, or negative error code on invalid FD.
+ */
+int64_t fd_get_size(void *proc_ptr, int fd) {
+    process_t *proc = (process_t *)proc_ptr;
+    if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    open_file_t *of = proc->fds[fd];
+    if (!of) {
+        return SYSCALL_EBADF;
+    }
+
+    if (of->type == OPEN_FILE_VFS && of->node != NULL) {
+        return (int64_t)of->node->size;
+    } else if (of->type == OPEN_FILE_CONSOLE) {
+        return 0;
+    }
+
+    return SYSCALL_EBADF;
+}
+
+/*
  * fd_close_all - Closes and cleans up all open file descriptors for a process.
  * Invoked during process termination and deferred reaping.
  */

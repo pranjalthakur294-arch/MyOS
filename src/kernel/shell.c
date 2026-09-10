@@ -71,6 +71,7 @@ static void builtin_proctest(const char *args);
 static void builtin_elftest(const char *args);
 static void builtin_vfstest(const char *args);
 static void builtin_fdtest(const char *args);
+static void builtin_run(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -100,6 +101,7 @@ static const struct shell_command commands[] = {
     {"elftest",     "Test ELF64 loader",     builtin_elftest},
     {"vfstest",     "Test VFS and RAMFS",    builtin_vfstest},
     {"fdtest",      "Test file descriptors", builtin_fdtest},
+    {"run",         "Execute ELF from VFS",  builtin_run},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -171,6 +173,7 @@ static void builtin_about(const char *args) {
     vga_puts("ELF Loader: ELF64 PT_LOAD Validator Active\n");
     vga_puts("VFS/RAMFS: In-Memory Virtual Filesystem Active\n");
     vga_puts("FD Table: Open/Read/Write/Close Active\n");
+    vga_puts("Filesystem Exec: run <path> via VFS/FD Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -542,6 +545,71 @@ static void builtin_vfstest(const char *args) {
 static void builtin_fdtest(const char *args) {
     (void)args;
     fd_run_tests();
+}
+
+/*
+ * Built-in Command: run
+ * Loads and executes an ELF64 executable from a VFS path in Ring 3.
+ * Usage: run <path>
+ */
+static void builtin_run(const char *args) {
+    if (args == NULL || *args == '\0') {
+        vga_puts("Usage: run <path>\n");
+        return;
+    }
+
+    /* Skip leading whitespace */
+    const char *p = args;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p == '\0') {
+        vga_puts("Usage: run <path>\n");
+        return;
+    }
+
+    /* Extract single whitespace-delimited path token */
+    char path[VFS_PATH_MAX];
+    size_t len = 0;
+    while (*p != '\0' && *p != ' ' && *p != '\t' && len + 1 < sizeof(path)) {
+        path[len++] = *p++;
+    }
+    path[len] = '\0';
+
+    /* Execute ELF through VFS/FD pipeline */
+    process_t *proc = NULL;
+    int err = process_exec_path(path, "user_proc", &proc);
+    if (err != 0 || !proc) {
+        if (err == ELF_ERR_NOT_FOUND) {
+            vga_puts("Error: File not found: ");
+            vga_puts(path);
+            vga_putc('\n');
+        } else if (err == ELF_ERR_IS_DIR) {
+            vga_puts("Error: Cannot execute directory: ");
+            vga_puts(path);
+            vga_putc('\n');
+        } else {
+            vga_puts("Error: Failed to load ELF '");
+            vga_puts(path);
+            vga_puts("': ");
+            vga_puts(elf_strerror(err));
+            vga_putc('\n');
+        }
+        return;
+    }
+
+    /* Allow process to execute in Ring 3 under timer-driven scheduler */
+    __asm__ volatile ("sti");
+    uint64_t start_tick = timer_get_ticks();
+    while ((timer_get_ticks() - start_tick) < 200) {
+        if (proc->state == PROCESS_TERMINATED || proc->reaped) {
+            break;
+        }
+        __asm__ volatile ("hlt");
+    }
+
+    /* Cleanly reap terminated process and return physical frames to PMM */
+    process_reap_terminated();
 }
 
 /*
