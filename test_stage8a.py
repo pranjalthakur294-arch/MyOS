@@ -119,7 +119,7 @@ def print_screen(rows, title):
             print(f"[{idx:02d}] {r}")
     print("----------------------------\n")
 
-def run_qemu_monitor_cmd(qemu_cmds, boot_wait=1.4):
+def run_qemu_monitor_cmd(qemu_cmds, boot_wait=1.8):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",

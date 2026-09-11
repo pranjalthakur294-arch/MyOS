@@ -25,6 +25,7 @@ typedef enum {
  * VFS Error Codes
  */
 #define VFS_OK                  0   /* Success */
+#define VFS_EOF                 1   /* End of directory reached in readdir */
 #define VFS_ERR_INVALID        -1   /* Invalid argument or NULL pointer */
 #define VFS_ERR_NOT_FOUND      -2   /* File or path component not found */
 #define VFS_ERR_EXISTS         -3   /* Node already exists */
@@ -39,6 +40,17 @@ typedef enum {
 /* Forward declarations */
 typedef struct vfs_node vfs_node_t;
 typedef struct vfs_fs vfs_fs_t;
+typedef struct vfs_dirent vfs_dirent_t;
+
+/*
+ * VFS Directory Entry Structure
+ * Represents a single directory entry exposed during directory iteration.
+ */
+struct vfs_dirent {
+    char name[VFS_NAME_MAX];
+    vfs_node_type_t type;
+    uint64_t size;
+};
 
 /*
  * VFS Node Operations Table
@@ -50,6 +62,7 @@ typedef struct vfs_node_ops {
     int (*lookup)(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
     int (*create)(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
     int (*mkdir)(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
+    int (*readdir)(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent);
 } vfs_node_ops_t;
 
 /*
@@ -92,6 +105,7 @@ vfs_node_t *vfs_get_root(void);
 int vfs_lookup(const char *path, vfs_node_t **out_node);
 int vfs_create(const char *path, vfs_node_t **out_node);
 int vfs_mkdir(const char *path, vfs_node_t **out_node);
+int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent);
 int vfs_read(vfs_node_t *node, void *buffer, uint64_t offset, size_t size, size_t *bytes_read);
 int vfs_write(vfs_node_t *node, const void *buffer, uint64_t offset, size_t size, size_t *bytes_written);
 const char *vfs_strerror(int err);

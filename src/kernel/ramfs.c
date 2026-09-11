@@ -82,13 +82,15 @@ static int ramfs_write(vfs_node_t *node, const void *buffer, uint64_t offset, si
 static int ramfs_lookup(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
 static int ramfs_create(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
 static int ramfs_mkdir(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
+static int ramfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent);
 
 static vfs_node_ops_t ramfs_node_ops = {
     .read = ramfs_read,
     .write = ramfs_write,
     .lookup = ramfs_lookup,
     .create = ramfs_create,
-    .mkdir = ramfs_mkdir
+    .mkdir = ramfs_mkdir,
+    .readdir = ramfs_readdir
 };
 
 /*
@@ -381,6 +383,43 @@ static int ramfs_mkdir(vfs_node_t *dir, const char *name, vfs_node_t **out_node)
         *out_node = &rnode->vfs_node;
     }
     return VFS_OK;
+}
+
+/*
+ * ramfs_readdir - Iterates over children of a RAMFS directory node.
+ * Returns VFS_OK on success, VFS_EOF at end of directory, or negative error.
+ */
+static int ramfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent) {
+    if (dir == NULL || dirent == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+    ramfs_node_t *rdir = (ramfs_node_t *)dir->internal_data;
+    if (rdir == NULL) {
+        return VFS_ERR_IO;
+    }
+
+    ramfs_dirent_t *curr = rdir->dir.children_head;
+    uint64_t i = 0;
+    while (curr != NULL) {
+        if (i == index) {
+            kstrncpy(dirent->name, curr->name, VFS_NAME_MAX);
+            if (curr->node != NULL) {
+                dirent->type = curr->node->type;
+                dirent->size = curr->node->size;
+            } else {
+                dirent->type = VFS_NODE_INVALID;
+                dirent->size = 0;
+            }
+            return VFS_OK;
+        }
+        curr = curr->next;
+        i++;
+    }
+
+    return VFS_EOF;
 }
 
 /*

@@ -254,6 +254,25 @@
       - Compact 2-column layout in `help` to strictly maintain the 25-row screen display budget.
   - Automated Verification Suite:
     - `test_stage11c.py`: Comprehensive 10-test automated suite verifying command usage, non-existent file rejection, directory execution rejection, corrupted ELF rejection, `/bin/test` execution to exit code 42, dual-process concurrency/isolation, `run /bin/test` shell execution, storage independence (zero embedded symbols in `elf.o`), and post-execution heap stability.
+- **Stage 11D: Shell Filesystem Operations (`ls`, `cat`, `touch`, `mkdir`)**
+  - Filesystem-Independent Directory Iteration (`vfs.h`, `vfs.c`):
+    - Added `vfs_dirent_t` representing an abstract directory entry with `name[VFS_NAME_MAX]`, `type` (`VFS_NODE_FILE`, `VFS_NODE_DIRECTORY`), and `size`.
+    - Added `int (*readdir)(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent)` operation to `vfs_node_ops_t`.
+    - Implemented public VFS API `vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent)` returning `VFS_OK` (0), `VFS_EOF` (1), or negative error codes (`VFS_ERR_NOT_DIR`, `VFS_ERR_INVALID`, `VFS_ERR_NOT_SUPPORTED`).
+  - RAMFS Directory Iteration (`ramfs.c`):
+    - Implemented `ramfs_readdir()` traversing directory children linked list up to `index` without dynamic heap allocations.
+    - Fully decoupled from the shell: the shell never includes `ramfs.h` or accesses RAMFS node internals directly.
+  - Interactive Shell Filesystem Commands (`shell.c`):
+    - `ls [path]`: Lists directory contents via `vfs_lookup` and `vfs_readdir`, appending `/` to directory entries (e.g. `bin/`, `etc/`) to distinguish them from regular files. Defaults to root `/` if path argument is omitted. Rejects non-directory targets and nonexistent paths with clear diagnostics.
+    - `cat <path>`: Displays file contents using the File Descriptor abstraction (`fd_open`, `fd_read`, `fd_close`). Reads in bounded 128-byte chunks, outputs bytes safely via `vga_putc`, cleanly handles binary files (`/bin/test`) and empty files, rejects directories (`cat: <path>: Is a directory`), and guarantees descriptor closure on all paths.
+    - `touch <path>`: Creates a new empty regular file (`size = 0`) via `vfs_create()`. Rejects duplicate names (`touch: cannot touch '<path>': File already exists`), missing parent directories, and non-directory parents.
+    - `mkdir <path>`: Creates a new empty directory via `vfs_mkdir()`. Rejects existing entries (`mkdir: cannot create directory '<path>': File exists`), missing parent directories, and non-directory parents.
+  - Strict Argument Validation:
+    - Added `parse_single_path_arg()` rejecting empty paths and trailing excess arguments (e.g. `touch /a /b`, `mkdir /a /b`, `cat /a /b`, `ls /a /b`) with standard `Usage:` notices.
+  - Screen Budget Compliance:
+    - 29 built-in shell commands formatted in a 2-column layout in `help`, occupying only 16 screen rows within the 25-row VGA screen limit.
+  - Automated Verification Suite:
+    - `test_stage11d.py`: 12-test automated suite covering all 28 stage requirements, negative validation, stress testing, heap stability, and coexistence with Stages 1–11C.
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
@@ -329,6 +348,7 @@ MyOS/
 ├── test_stage11a.py             # Stage 11A automated test suite
 ├── test_stage11b.py             # Stage 11B automated test suite
 ├── test_stage11c.py             # Stage 11C automated test suite
+├── test_stage11d.py             # Stage 11D automated test suite
 ├── user/
 │   ├── linker.ld                # User ELF linker script (PT_LOAD segments at 0x60000000)
 │   ├── start.S                  # User entry point (_start) with int 0x80 SYS_EXIT
@@ -414,5 +434,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage11c.py
+python3 test_stage11d.py
 ```

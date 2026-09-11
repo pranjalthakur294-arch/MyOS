@@ -267,6 +267,24 @@ int vfs_mkdir(const char *path, vfs_node_t **out_node) {
 }
 
 /*
+ * vfs_readdir - Reads a directory entry at the specified index from a directory node.
+ * Returns VFS_OK on success, VFS_EOF at end of directory, or negative error code.
+ */
+int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent) {
+    if (dir == NULL || dirent == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+    if (dir->ops == NULL || dir->ops->readdir == NULL) {
+        return VFS_ERR_NOT_SUPPORTED;
+    }
+
+    return dir->ops->readdir(dir, index, dirent);
+}
+
+/*
  * vfs_read - Reads data from a VFS file node.
  */
 int vfs_read(vfs_node_t *node, void *buffer, uint64_t offset, size_t size, size_t *bytes_read) {

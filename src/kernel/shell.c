@@ -72,6 +72,10 @@ static void builtin_elftest(const char *args);
 static void builtin_vfstest(const char *args);
 static void builtin_fdtest(const char *args);
 static void builtin_run(const char *args);
+static void builtin_ls(const char *args);
+static void builtin_cat(const char *args);
+static void builtin_touch(const char *args);
+static void builtin_mkdir(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -102,6 +106,10 @@ static const struct shell_command commands[] = {
     {"vfstest",     "Test VFS and RAMFS",    builtin_vfstest},
     {"fdtest",      "Test file descriptors", builtin_fdtest},
     {"run",         "Execute ELF from VFS",  builtin_run},
+    {"ls",          "List directory",        builtin_ls},
+    {"cat",         "Concatenate file",      builtin_cat},
+    {"touch",       "Create empty file",     builtin_touch},
+    {"mkdir",       "Create directory",      builtin_mkdir},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -174,6 +182,7 @@ static void builtin_about(const char *args) {
     vga_puts("VFS/RAMFS: In-Memory Virtual Filesystem Active\n");
     vga_puts("FD Table: Open/Read/Write/Close Active\n");
     vga_puts("Filesystem Exec: run <path> via VFS/FD Active\n");
+    vga_puts("FS Commands: ls, cat, touch, mkdir Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -610,6 +619,247 @@ static void builtin_run(const char *args) {
 
     /* Cleanly reap terminated process and return physical frames to PMM */
     process_reap_terminated();
+}
+
+/*
+ * parse_single_path_arg - Extracts a single path argument token.
+ * Returns:
+ *    0 : single path argument successfully extracted
+ *   -1 : no path argument supplied (empty / whitespace only)
+ *   -2 : excess argument tokens supplied
+ */
+static int parse_single_path_arg(const char *args, char *out_path, size_t max_len) {
+    if (args == NULL || *args == '\0') {
+        return -1;
+    }
+    const char *p = args;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p == '\0') {
+        return -1;
+    }
+
+    size_t len = 0;
+    while (*p != '\0' && *p != ' ' && *p != '\t') {
+        if (len + 1 < max_len) {
+            out_path[len++] = *p;
+        }
+        p++;
+    }
+    out_path[len] = '\0';
+
+    /* Check for trailing excess argument tokens */
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p != '\0') {
+        return -2;
+    }
+
+    return 0;
+}
+
+/*
+ * Built-in Command: ls
+ * Lists contents of a directory.
+ * Usage: ls [path] (defaults to / if omitted)
+ */
+static void builtin_ls(const char *args) {
+    char path[VFS_PATH_MAX];
+    int res = parse_single_path_arg(args, path, sizeof(path));
+    if (res == -2) {
+        vga_puts("Usage: ls [path]\n");
+        return;
+    }
+    if (res == -1) {
+        path[0] = '/';
+        path[1] = '\0';
+    }
+
+    vfs_node_t *dir_node = NULL;
+    int err = vfs_lookup(path, &dir_node);
+    if (err != VFS_OK || dir_node == NULL) {
+        vga_puts("ls: cannot access '");
+        vga_puts(path);
+        vga_puts("': No such file or directory\n");
+        return;
+    }
+
+    if (dir_node->type != VFS_NODE_DIRECTORY) {
+        vga_puts("ls: cannot access '");
+        vga_puts(path);
+        vga_puts("': Not a directory\n");
+        return;
+    }
+
+    uint64_t idx = 0;
+    vfs_dirent_t dirent;
+    while (1) {
+        int r = vfs_readdir(dir_node, idx, &dirent);
+        if (r == VFS_EOF) {
+            break;
+        }
+        if (r != VFS_OK) {
+            vga_puts("ls: error reading directory '");
+            vga_puts(path);
+            vga_puts("'\n");
+            break;
+        }
+
+        vga_puts(dirent.name);
+        if (dirent.type == VFS_NODE_DIRECTORY) {
+            vga_putc('/');
+        }
+        vga_putc('\n');
+        idx++;
+    }
+}
+
+/*
+ * Built-in Command: cat
+ * Displays contents of a file through the File Descriptor layer.
+ * Usage: cat <path>
+ */
+static void builtin_cat(const char *args) {
+    char path[VFS_PATH_MAX];
+    int res = parse_single_path_arg(args, path, sizeof(path));
+    if (res != 0) {
+        vga_puts("Usage: cat <path>\n");
+        return;
+    }
+
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
+        if (!proc) {
+            vga_puts("cat: error obtaining process context\n");
+            return;
+        }
+    }
+
+    int fd = fd_open(proc, path, O_RDONLY);
+    if (fd < 0) {
+        if (fd == SYSCALL_ENOENT) {
+            vga_puts("cat: ");
+            vga_puts(path);
+            vga_puts(": No such file or directory\n");
+        } else if (fd == SYSCALL_EISDIR) {
+            vga_puts("cat: ");
+            vga_puts(path);
+            vga_puts(": Is a directory\n");
+        } else {
+            vga_puts("cat: ");
+            vga_puts(path);
+            vga_puts(": Cannot open file\n");
+        }
+        return;
+    }
+
+    /* Bounded buffer chunk read */
+    char buf[128];
+    while (1) {
+        int64_t n = fd_read(proc, fd, buf, sizeof(buf));
+        if (n == 0) {
+            break; /* EOF */
+        }
+        if (n < 0) {
+            if (n == SYSCALL_EISDIR) {
+                vga_puts("cat: ");
+                vga_puts(path);
+                vga_puts(": Is a directory\n");
+            } else {
+                vga_puts("cat: read error\n");
+            }
+            break;
+        }
+
+        for (int64_t i = 0; i < n; i++) {
+            vga_putc(buf[i]);
+        }
+    }
+
+    fd_close(proc, fd);
+}
+
+/*
+ * Built-in Command: touch
+ * Creates a new empty regular file through VFS.
+ * Usage: touch <path>
+ */
+static void builtin_touch(const char *args) {
+    char path[VFS_PATH_MAX];
+    int res = parse_single_path_arg(args, path, sizeof(path));
+    if (res != 0) {
+        vga_puts("Usage: touch <path>\n");
+        return;
+    }
+
+    vfs_node_t *node = NULL;
+    int err = vfs_create(path, &node);
+    if (err != VFS_OK) {
+        if (err == VFS_ERR_EXISTS) {
+            vga_puts("touch: cannot touch '");
+            vga_puts(path);
+            vga_puts("': File already exists\n");
+        } else if (err == VFS_ERR_NOT_FOUND) {
+            vga_puts("touch: cannot touch '");
+            vga_puts(path);
+            vga_puts("': No such file or directory\n");
+        } else if (err == VFS_ERR_NOT_DIR) {
+            vga_puts("touch: cannot touch '");
+            vga_puts(path);
+            vga_puts("': Not a directory\n");
+        } else if (err == VFS_ERR_NO_MEM) {
+            vga_puts("touch: cannot touch '");
+            vga_puts(path);
+            vga_puts("': Out of memory\n");
+        } else {
+            vga_puts("touch: cannot touch '");
+            vga_puts(path);
+            vga_puts("': Invalid path\n");
+        }
+    }
+}
+
+/*
+ * Built-in Command: mkdir
+ * Creates a new directory through VFS.
+ * Usage: mkdir <path>
+ */
+static void builtin_mkdir(const char *args) {
+    char path[VFS_PATH_MAX];
+    int res = parse_single_path_arg(args, path, sizeof(path));
+    if (res != 0) {
+        vga_puts("Usage: mkdir <path>\n");
+        return;
+    }
+
+    vfs_node_t *node = NULL;
+    int err = vfs_mkdir(path, &node);
+    if (err != VFS_OK) {
+        if (err == VFS_ERR_EXISTS) {
+            vga_puts("mkdir: cannot create directory '");
+            vga_puts(path);
+            vga_puts("': File exists\n");
+        } else if (err == VFS_ERR_NOT_FOUND) {
+            vga_puts("mkdir: cannot create directory '");
+            vga_puts(path);
+            vga_puts("': No such file or directory\n");
+        } else if (err == VFS_ERR_NOT_DIR) {
+            vga_puts("mkdir: cannot create directory '");
+            vga_puts(path);
+            vga_puts("': Not a directory\n");
+        } else if (err == VFS_ERR_NO_MEM) {
+            vga_puts("mkdir: cannot create directory '");
+            vga_puts(path);
+            vga_puts("': Out of memory\n");
+        } else {
+            vga_puts("mkdir: cannot create directory '");
+            vga_puts(path);
+            vga_puts("': Invalid path\n");
+        }
+    }
 }
 
 /*
