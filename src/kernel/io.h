@@ -20,6 +20,22 @@ static inline void outb(uint16_t port, uint8_t val) {
 }
 
 /*
+ * inw - Reads a 16-bit value from an I/O port.
+ */
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+/*
+ * outw - Writes a 16-bit value to an I/O port.
+ */
+static inline void outw(uint16_t port, uint16_t val) {
+    __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+/*
  * io_wait - Provides a brief delay for slow I/O devices (such as the legacy 8259 PIC)
  * by writing to the unused port 0x80 (traditionally used for POST debug codes).
  */

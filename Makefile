@@ -48,7 +48,7 @@ C_SRCS   := $(SRC_DIR)/kernel/kernel.c $(SRC_DIR)/kernel/vga.c $(SRC_DIR)/kernel
             $(SRC_DIR)/kernel/pmm.c $(SRC_DIR)/kernel/vmm.c $(SRC_DIR)/kernel/heap.c $(SRC_DIR)/kernel/task.c \
             $(SRC_DIR)/kernel/scheduler.c $(SRC_DIR)/kernel/gdt.c $(SRC_DIR)/kernel/user.c $(SRC_DIR)/kernel/syscall.c \
             $(SRC_DIR)/kernel/process.c $(SRC_DIR)/kernel/elf.c $(SRC_DIR)/kernel/vfs.c $(SRC_DIR)/kernel/ramfs.c \
-            $(SRC_DIR)/kernel/file.c
+            $(SRC_DIR)/kernel/file.c $(SRC_DIR)/kernel/ata.c
 ASM_SRCS := $(SRC_DIR)/arch/x86_64/boot.S $(SRC_DIR)/arch/x86_64/interrupts.S $(SRC_DIR)/arch/x86_64/context_switch.S \
             $(SRC_DIR)/arch/x86_64/user.S $(SRC_DIR)/kernel/elf_image.S
 
@@ -62,12 +62,15 @@ USER_BIN     := $(BUILD_DIR)/user/test_program.elf
 USER_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/test_program.o
 USER_LDFLAGS := -nostdlib -z max-page-size=0x1000 -T $(USER_DIR)/linker.ld
 
+# Raw Test Disk Image (32 MiB)
+DISK_IMG     := $(BUILD_DIR)/disk.img
+
 # ------------------------------------------------------------------------------
 # Build Targets
 # ------------------------------------------------------------------------------
 .PHONY: all clean run run-iso iso check-env help
 
-all: $(KERNEL_BIN)
+all: $(KERNEL_BIN) $(DISK_IMG)
 
 # Compile User-Space ELF Objects
 $(BUILD_DIR)/user/%.o: $(USER_DIR)/%.S
@@ -118,9 +121,14 @@ $(KERNEL_ISO): $(KERNEL_BIN) grub.cfg
 	    -o $(KERNEL_ISO) $(ISO_DIR)
 	@echo "[SUCCESS] Bootable ISO created at $@"
 
+# Create a 32 MiB raw zero-filled test disk image
+$(DISK_IMG):
+	@mkdir -p $(BUILD_DIR)
+	@dd if=/dev/zero of=$@ bs=1M count=32 status=none
+
 # Run directly in QEMU via direct kernel boot (-kernel)
-run: $(KERNEL_BIN)
-	$(QEMU) -kernel $(KERNEL_BIN)
+run: $(KERNEL_BIN) $(DISK_IMG)
+	$(QEMU) -kernel $(KERNEL_BIN) -hda $(DISK_IMG)
 
 # Run ISO image in QEMU (-cdrom)
 run-iso: $(KERNEL_ISO)

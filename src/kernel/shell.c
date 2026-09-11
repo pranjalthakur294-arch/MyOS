@@ -13,6 +13,7 @@
 #include "elf.h"
 #include "vfs.h"
 #include "file.h"
+#include "ata.h"
 #include <stddef.h>
 
 /*
@@ -79,6 +80,8 @@ static void builtin_cat(const char *args);
 static void builtin_touch(const char *args);
 static void builtin_mkdir(const char *args);
 static void builtin_rm(const char *args);
+static void builtin_diskinfo(const char *args);
+static void builtin_disktest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -116,6 +119,8 @@ static const struct shell_command commands[] = {
     {"touch",       "Create empty file",     builtin_touch},
     {"mkdir",       "Create directory",      builtin_mkdir},
     {"rm",          "Remove file",           builtin_rm},
+    {"diskinfo",    "Show ATA disk info",    builtin_diskinfo},
+    {"disktest",    "Test ATA sector I/O",   builtin_disktest},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -190,6 +195,7 @@ static void builtin_about(const char *args) {
     vga_puts("Filesystem Exec: run <path> via VFS/FD Active\n");
     vga_puts("FS Commands: ls, cat, touch, mkdir Active\n");
     vga_puts("CWD/Path Ops: pwd, cd, rm Active\n");
+    vga_puts("Disk: Primary ATA PIO Driver Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -1006,6 +1012,204 @@ static void builtin_rm(const char *args) {
             vga_puts("': Invalid path\n");
         }
     }
+}
+
+/*
+ * Built-in Command: diskinfo
+ * Displays concise ATA Primary Master drive parameters.
+ */
+static void builtin_diskinfo(const char *args) {
+    (void)args;
+    vga_puts("ATA Disk Information:\n");
+    vga_puts("Channel: Primary\n");
+    vga_puts("Device: Master\n");
+    if (!ata_is_present()) {
+        vga_puts("Present: No\n");
+        return;
+    }
+    vga_puts("Present: Yes\n");
+    vga_puts("Model: ");
+    vga_puts(ata_get_model());
+    vga_putc('\n');
+    vga_puts("Sector Size: ");
+    vga_print_dec(ata_get_sector_size());
+    vga_puts(" bytes\n");
+    vga_puts("LBA28 Sectors: ");
+    uint32_t count = ata_get_sector_count();
+    vga_print_dec(count);
+    vga_putc('\n');
+    vga_puts("Capacity: ");
+    vga_print_dec(count / 2048);
+    vga_puts(" MB\n");
+}
+
+static uint8_t s_orig_sector[ATA_SECTOR_SIZE];
+static uint8_t s_test_sector[ATA_SECTOR_SIZE];
+static uint8_t s_verify_sector[ATA_SECTOR_SIZE];
+
+/*
+ * Built-in Command: disktest
+ * Executes a non-destructive verification sequence on reserved sector LBA 8:
+ * 1. Read original sector
+ * 2. Write deterministic test pattern
+ * 3. Verify all 512 bytes read back
+ * 4. Restore original sector and verify restoration
+ */
+static void builtin_disktest(const char *args) {
+    (void)args;
+    if (!ata_is_present()) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("ATA disk not present\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    /* Negative parameter validation */
+    if (ata_read_sector(0, NULL) != ATA_ERR_INVALID ||
+        ata_read_sector(0xFFFFFFFF, s_orig_sector) != ATA_ERR_INVALID ||
+        ata_read_sector(ata_get_sector_count(), s_orig_sector) != ATA_ERR_INVALID ||
+        ata_write_sector(0, NULL) != ATA_ERR_INVALID ||
+        ata_write_sector(0xFFFFFFFF, s_orig_sector) != ATA_ERR_INVALID ||
+        ata_write_sector(ata_get_sector_count(), s_orig_sector) != ATA_ERR_INVALID) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("Negative validation failed\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    vga_puts("ATA PIO Disk Test (LBA 8):\n");
+
+    /* Step 1: Read original sector */
+    vga_puts("[1/4] Reading original sector... ");
+    int rc = ata_read_sector(ATA_TEST_LBA, s_orig_sector);
+    if (rc != ATA_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+    vga_puts("OK\n");
+
+    /* Step 2: Consecutive writes with distinct patterns (verifies write safety & cache flush) */
+    vga_puts("[2/4] Writing test pattern... ");
+    /* Write pattern 1: (i ^ 0x5A) */
+    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+        s_test_sector[i] = (uint8_t)(i ^ 0x5A);
+    }
+    rc = ata_write_sector(ATA_TEST_LBA, s_test_sector);
+    if (rc != ATA_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED p1 (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        ata_write_sector(ATA_TEST_LBA, s_orig_sector);
+        return;
+    }
+
+    /* Write pattern 2: (i ^ 0x3C) */
+    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+        s_test_sector[i] = (uint8_t)(i ^ 0x3C);
+    }
+    rc = ata_write_sector(ATA_TEST_LBA, s_test_sector);
+    if (rc != ATA_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED p2 (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        ata_write_sector(ATA_TEST_LBA, s_orig_sector);
+        return;
+    }
+
+    /* Write pattern 3: (i ^ 0xA5) */
+    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+        s_test_sector[i] = (uint8_t)(i ^ 0xA5);
+    }
+    rc = ata_write_sector(ATA_TEST_LBA, s_test_sector);
+    if (rc != ATA_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED p3 (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        ata_write_sector(ATA_TEST_LBA, s_orig_sector);
+        return;
+    }
+    vga_puts("OK\n");
+
+    /* Step 3: Read back and verify pattern */
+    vga_puts("[3/4] Verifying test pattern... ");
+    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+        s_verify_sector[i] = 0;
+    }
+    rc = ata_read_sector(ATA_TEST_LBA, s_verify_sector);
+    if (rc != ATA_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED read (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        ata_write_sector(ATA_TEST_LBA, s_orig_sector);
+        return;
+    }
+
+    bool matched = true;
+    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+        if (s_verify_sector[i] != (uint8_t)(i ^ 0xA5)) {
+            matched = false;
+            break;
+        }
+    }
+    if (!matched) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED data mismatch\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        ata_write_sector(ATA_TEST_LBA, s_orig_sector);
+        return;
+    }
+    vga_puts("OK\n");
+
+    /* Step 4: Restore original sector and verify restoration */
+    vga_puts("[4/4] Restoring original sector... ");
+    rc = ata_write_sector(ATA_TEST_LBA, s_orig_sector);
+    if (rc != ATA_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED write (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+    rc = ata_read_sector(ATA_TEST_LBA, s_verify_sector);
+    if (rc != ATA_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED reread (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+    bool restored = true;
+    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+        if (s_verify_sector[i] != s_orig_sector[i]) {
+            restored = false;
+            break;
+        }
+    }
+    if (!restored) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED restore mismatch\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+    vga_puts("OK\n");
+
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("Disk test passed!\n");
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 }
 
 /*

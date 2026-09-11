@@ -18,6 +18,7 @@
 #include "vfs.h"
 #include "ramfs.h"
 #include "file.h"
+#include "ata.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -89,6 +90,9 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
 
     /* 12a-2. Initialize File Descriptors Subsystem (Stage 11B) */
     file_init();
+
+    /* 12a-3. Initialize ATA PIO Disk Driver (Stage 12A - silent probe) */
+    ata_init();
 
     /* 12b. Initialize User Mode Subsystem */
     user_init();

@@ -1,54 +1,56 @@
-# Stage 11E Walkthrough: Process Working Directory, Path Resolution & File Lifecycle
+# Stage 12A Walkthrough: ATA PIO Primary Master Disk Driver
 
 ## 1. Executive Summary
 
-Stage 11E completes the process-centric filesystem interface for MyOS:
-1. **Per-Process Current Working Directory (`cwd`)**:
-   - Each process maintains an active directory reference (`cwd`) initialized to `/`.
-   - `process_set_cwd()` manages reference ownership safely (`vfs_node_ref` / `vfs_node_unref`).
-   - Clean CWD reference release during process reaping.
-2. **Relative Path Resolution & Hierarchical Navigation**:
-   - Directory nodes track non-owning back-pointers (`parent`), with root pointing to itself.
-   - `vfs_lookup_from()` resolves both relative paths (from process `cwd`) and absolute paths (from `/`), fully supporting `.` (current) and `..` (parent), clamped safely at `/`.
-   - `vfs_get_path()` reconstructs canonical absolute paths by climbing parent pointers with zero heap allocations.
-3. **File Lifecycle & Unlinking**:
-   - `vfs_unlink_from()` / `ramfs_unlink()` unlinks regular files and detaches directory entries.
-   - Rejects directory targets (`VFS_ERR_IS_DIR`), root `/`, `.`, and `..`.
-   - Dual-condition destruction: files are destroyed immediately if unreferenced (`ref_count == 0`), or deferred until the last active file descriptor closes (`fd_close` / `vfs_node_unref`).
-4. **Shell Filesystem Commands**:
-   - `pwd`: Prints the current process's canonical working directory path.
-   - `cd <path>`: Changes working directory with full relative, absolute, and root clamping support; leaves CWD unchanged on errors with zero memory leaks.
-   - `rm <path>`: Removes regular files with comprehensive negative validation.
-   - Updated `ls`, `cat`, `touch`, `mkdir`, and `run` to resolve relative paths against `cwd`.
+Stage 12A introduces persistent disk controller support to MyOS through a polling-based ATA Programmed I/O (PIO) driver for the Primary Master channel:
+
+1. **16-bit Port I/O Primitives**:
+   - Implemented `inw(uint16_t port)` and `outw(uint16_t port, uint16_t val)` in `src/kernel/io.h` using GCC inline assembly.
+   - Bound explicitly to `%ax` register with volatile semantics to prevent compiler reordering.
+2. **ATA PIO Driver (`src/kernel/ata.h`, `src/kernel/ata.c`)**:
+   - Hardware register definitions for Primary Bus (`0x1F0`–`0x1F7`) and Device Control / Alternate Status (`0x3F6`).
+   - Drive identification (`IDENTIFY`, 0xEC) with floating bus (`0xFF`/`0x00`) and ATAPI/SATA signature checks.
+   - 28-bit LBA single-sector reading (`READ SECTORS`, 0x20) and writing (`WRITE SECTORS`, 0x30).
+   - Alternate Status (`0x3F6`) polling to prevent clearing controller interrupt requests.
+   - Write completion synchronization waiting for `BSY == 0` followed by `FLUSH CACHE` (`0xE7`).
+   - Bounded timeout loops (2,000,000 iterations) preventing system hangs.
+   - Model string byte swapping and space trimming.
+3. **Shell Diagnostics (`src/kernel/shell.c`)**:
+   - `diskinfo`: Displays Primary Master geometry (Model, Sector Size, LBA28 Sector Count, Capacity in MB).
+   - `disktest`: Non-destructive verification sequence on reserved sector LBA 8 (read original, write multi-pattern test data, verify, restore, verify restoration).
+   - Negative parameter validation (rejects NULL pointers, LBA overflow, capacity limits).
+   - Updated `about` and `help` commands within screen budget constraints.
+4. **Build System & Environment (`Makefile`)**:
+   - Added raw 32 MiB disk image generation target `$(BUILD_DIR)/disk.img` via `dd`.
+   - Attached disk image to QEMU via `-hda $(BUILD_DIR)/disk.img`.
+5. **Decoupled Architecture**:
+   - Zero VFS integration: RAMFS remains the sole mounted root filesystem (`/`).
+   - Purely polling-based: IRQ14/IRQ15 remain masked; no interrupts used.
 
 ---
 
 ## 2. Layering Architecture
 
 ```text
-User / Shell
-  │
-  ├── pwd               ──► vfs_get_path(proc->cwd)
-  ├── cd <path>         ──► vfs_lookup_from(proc->cwd) ──► process_set_cwd()
-  ├── rm <path>         ──► vfs_unlink_from(proc->cwd)
-  ├── ls [path]         ──► vfs_lookup_from(proc->cwd) ──► vfs_readdir()
-  ├── cat <path>        ──► fd_open(proc, path)        ──► vfs_lookup_from(proc->cwd)
-  ├── touch <path>      ──► vfs_create_from(proc->cwd)
-  ├── mkdir <path>      ──► vfs_mkdir_from(proc->cwd)
-  └── run <path>        ──► process_exec_path()        ──► fd_open(proc, path)
-        │
-        ▼
-VFS Layer (vfs.h, vfs.c)
-  - Intrusive reference counting: vfs_node_ref(), vfs_node_unref()
-  - Hierarchical parent back-pointers: node->parent
-  - Path traversal & normalization: vfs_lookup_from(), split_parent_and_leaf_from()
-  - Canonical path reconstruction: vfs_get_path()
-        │
-        ▼
-RAMFS Storage Layer (ramfs.h, ramfs.c)
-  - Node unlink: ramfs_unlink() detaches dirent, sets node->unlinked = true
-  - Deferred release: ramfs_release() destroys node when unlinked && ref_count == 0
-  - Static boot image preservation (/bin, /bin/test, /bin/bad, /etc, /readme.txt)
+Shell Commands (diskinfo, disktest)
+      │
+      ▼
+ATA PIO Driver Interface (ata.h, ata.c)
+  ├── ata_init()           - Silent probe during kernel initialization
+  ├── ata_identify()       - Probe drive, parse model string, geometry, LBA capacity
+  ├── ata_read_sector()    - Read 512 bytes via LBA28 + 256-word inw() loop
+  ├── ata_write_sector()   - Write 512 bytes via LBA28 + 256-word outw() loop + FLUSH CACHE
+  └── Informational getters (ata_is_present, ata_get_sector_count, etc.)
+      │
+      ▼
+I/O Port Subsystem (io.h)
+  ├── inb / outb           - 8-bit port I/O
+  └── inw / outw           - 16-bit port I/O (ATA Data Register 0x1F0)
+      │
+      ▼
+Hardware / QEMU IDE Controller
+  ├── Base Ports: 0x1F0 - 0x1F7
+  └── Control Port: 0x3F6 (Alternate Status)
 ```
 
 ---
@@ -57,47 +59,11 @@ RAMFS Storage Layer (ramfs.h, ramfs.c)
 
 ### Build Quality
 - Toolchain: `x86_64-linux-gnu-gcc -std=c99 -Wall -Wextra -O2`
-- **Compiler Warnings: 0**
-- **Linker Warnings: 0**
-- **Whitespace Errors: 0 (`git diff --check`)**
+- **Compiler Warnings**: 0
+- **Linker Warnings**: 0
+- **Git Whitespace Errors (`git diff --check`)**: 0
 
-### Stage 11E Automated Test Suite (`test_stage11e.py`)
-- **[TEST 1]** Boot & 25-Row Screen Line Budget: **PASS**
-- **[TEST 2]** Initial `pwd` prints `/`: **PASS**
-- **[TEST 3]** `cd /bin` and `pwd` prints `/bin`: **PASS**
-- **[TEST 4]** `cd ..`, `cd .`, `cd /`, and root clamping (`cd ../..` stays at `/`): **PASS**
-- **[TEST 5]** `cd` Error Handling (nonexistent path, regular file, usage, CWD unchanged): **PASS**
-- **[TEST 6]** Relative Directory Creation & Nested Navigation (`mkdir testdir`, `cd testdir`, `mkdir sub`, `cd sub`): **PASS**
-- **[TEST 7]** Relative File Creation, Listing & Reading (`touch note.txt`, `ls`, `cat note.txt`, `cat ../readme.txt`): **PASS**
-- **[TEST 8]** `rm` File Unlinking (`rm testdir/note.txt`, confirmed by `ls` and `cat`): **PASS**
-- **[TEST 9]** `rm` Negative Validation (`/nonexistent`, `/bin`, `/`, `.`, `..`, usage errors): **PASS**
-- **[TEST 10]** ELF Execution via Relative Path (`cd /bin`, `run test`): **PASS**
-- **[TEST 11]** Repeated Operations, Lifecycle & Heap Stability: **PASS**
-- **[TEST 12]** Full Coexistence (`help`, `about`, `vfstest`, `fdtest`): **PASS**
-
-### Full 17-Suite Regression Matrix (100% PASS)
-```text
-==================================================
-FULL REPRESSION MATRIX RESULTS:
-==================================================
-  test_stage11e.py     : 12/12 PASS
-  test_stage11d.py     : 12/12 PASS
-  test_stage11c.py     : 10/10 PASS
-  test_stage11b.py     : 8/8   PASS
-  test_stage11a.py     : 10/10 PASS
-  test_stage10.py      : 14/14 PASS
-  test_stage9.py       : 12/12 PASS
-  test_stage8b.py      : 12/12 PASS
-  test_stage8a.py      : 10/10 PASS
-  test_stage7b.py      : 10/10 PASS
-  test_stage7a.py      : 8/8   PASS
-  test_stage6.py       : 15/15 PASS
-  test_stage5b.py      : 10/10 PASS
-  test_stage5a.py      : 10/10 PASS
-  test_stage4.py       : 8/8   PASS
-  test_stage3b.py      : 6/6   PASS
-  test_stage3a.py      : 6/6   PASS
-==================================================
-ALL 17 TEST SUITES PASSED WITH ZERO REGRESSIONS.
-==================================================
-```
+### Automated Test Matrix
+All 19 test suites passing 100%:
+- `test_stage12a.py`: **PASS (8/8 tests)**
+- Regression suites (Stages 3A through 11E, and keyboard test): **18/18 PASS**

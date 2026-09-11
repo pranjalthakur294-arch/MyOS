@@ -304,6 +304,41 @@
   - Automated Verification Suite:
     - `test_stage11e.py`: 12-test automated verification suite covering boot line budget, initial `pwd`, `cd`, relative navigation, error handling, relative directory creation, relative file ops, `rm` unlinking, `rm` error cases, relative `run test`, repeated stress/heap stability, and multi-subsystem coexistence.
 
+- **Stage 12A: ATA PIO Disk Driver (Primary Master, LBA28, Sector I/O)**
+  - Educational ATA PIO Driver Architecture (`src/kernel/ata.h`, `src/kernel/ata.c`):
+    - Dedicated polling-based driver for Primary ATA channel Master device (`0x1F0..0x1F7`, control port `0x3F6`).
+    - 28-bit Logical Block Addressing (`LBA <= 0x0FFFFFFF`), 512-byte sector size (256 16-bit words).
+    - Added 16-bit I/O primitives `inw()` and `outw()` to `src/kernel/io.h` via GCC inline assembly.
+  - Driver Protocol & Error Handling:
+    - Bounded iteration timeouts (`ATA_TIMEOUT_COUNT = 2000000`) and 400ns delays (`ata_delay()`) via Alternate Status port `0x3F6`.
+    - Polling checks Alternate Status `0x3F6` to avoid spurious interrupt clears and controller state corruption.
+    - Floating bus detection (`0xFF` / `0x00`) and non-ATA signature detection (`cl != 0 || ch != 0`) cleanly handles absent drive without hangs.
+    - Write synchronization: waits for BSY to clear after the 256th word transfer before issuing `ATA_CMD_FLUSH_CACHE` (0xE7).
+    - Status error inspection: checks `ATA_SR_ERR` and `ATA_SR_DF` on reads, writes, and cache flushes.
+  - Public Driver API:
+    - `ata_init()`: Silent probe and initialization at boot (0 rows printed, preserving 24-row boot banner).
+    - `ata_identify()`: Issues `0xEC`, validates LBA capability (word 49 bit 9), parses LBA28 sector count (words 60-61), and extracts 40-character ASCII model string with byte-swapping and trailing space trimming.
+    - `ata_read_sector(lba, buffer)`: Reads 512 bytes into buffer via command `0x20`.
+    - `ata_write_sector(lba, buffer)`: Writes 512 bytes from buffer via command `0x30` and flushes cache via `0xE7`.
+    - Informational getters: `ata_is_present()`, `ata_get_sector_count()`, `ata_get_sector_size()`, `ata_get_model()`.
+  - Shell Commands (`src/kernel/shell.c`):
+    - `diskinfo`: Displays Primary Master ATA drive status (Channel, Device, Present, Model, Sector Size, LBA28 Sectors, Capacity in MB). Cleanly reports `Present: No` if drive is absent.
+    - `disktest`: Non-destructive verification on reserved sector `ATA_TEST_LBA = 8`:
+      1. Negative parameter validation (NULL buffer and out-of-bounds LBA rejection).
+      2. Reads original sector into backup buffer.
+      3. Writes deterministic test pattern `(uint8_t)(i ^ 0xA5)`.
+      4. Reads back and verifies all 512 bytes.
+      5. Restores original sector data and verifies complete restoration.
+  - Build System & QEMU Integration (`Makefile`):
+    - Dedicated 32 MiB raw zero-filled test disk `build/disk.img` generated automatically.
+    - `make run` attaches `-hda $(DISK_IMG)`.
+    - Full absence support: kernel boots cleanly if QEMU is launched without `-hda`.
+  - Screen Budget Compliance:
+    - 34 built-in commands formatted in a 2-column layout in `help`, occupying 18 screen rows within the 25-row limit.
+    - `about` displays verified system status across 22 rows within the 25-row limit.
+  - Automated Verification Suite:
+    - `test_stage12a.py`: 8-test automated verification suite covering silent boot, screen budget, disk geometry, pattern read/write/verify/restore, idempotence, drive absence, shell command layout, and coexistence with Stages 1–11E.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
