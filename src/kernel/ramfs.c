@@ -64,6 +64,7 @@ typedef struct ramfs_dirent {
 typedef struct ramfs_node {
     vfs_node_t vfs_node;
     bool is_static;
+    bool unlinked;
     union {
         struct {
             ramfs_dirent_t *children_head;
@@ -83,6 +84,9 @@ static int ramfs_lookup(vfs_node_t *dir, const char *name, vfs_node_t **out_node
 static int ramfs_create(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
 static int ramfs_mkdir(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
 static int ramfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent);
+static int ramfs_unlink(vfs_node_t *dir, const char *name);
+static void ramfs_release(vfs_node_t *node);
+static void ramfs_destroy_node(vfs_node_t *node);
 
 static vfs_node_ops_t ramfs_node_ops = {
     .read = ramfs_read,
@@ -90,7 +94,9 @@ static vfs_node_ops_t ramfs_node_ops = {
     .lookup = ramfs_lookup,
     .create = ramfs_create,
     .mkdir = ramfs_mkdir,
-    .readdir = ramfs_readdir
+    .readdir = ramfs_readdir,
+    .unlink = ramfs_unlink,
+    .release = ramfs_release
 };
 
 /*
@@ -304,10 +310,13 @@ static int ramfs_create(vfs_node_t *dir, const char *name, vfs_node_t **out_node
     rnode->vfs_node.type = VFS_NODE_FILE;
     rnode->vfs_node.size = 0;
     rnode->vfs_node.permissions = 0644;
+    rnode->vfs_node.ref_count = 0;
+    rnode->vfs_node.parent = dir;
     rnode->vfs_node.ops = &ramfs_node_ops;
     rnode->vfs_node.fs = dir->fs;
     rnode->vfs_node.internal_data = rnode;
     rnode->is_static = false;
+    rnode->unlinked = false;
     rnode->file.data = NULL;
     rnode->file.capacity = 0;
     rnode->file.data_is_static = false;
@@ -367,10 +376,13 @@ static int ramfs_mkdir(vfs_node_t *dir, const char *name, vfs_node_t **out_node)
     rnode->vfs_node.type = VFS_NODE_DIRECTORY;
     rnode->vfs_node.size = 0;
     rnode->vfs_node.permissions = 0755;
+    rnode->vfs_node.ref_count = 0;
+    rnode->vfs_node.parent = dir;
     rnode->vfs_node.ops = &ramfs_node_ops;
     rnode->vfs_node.fs = dir->fs;
     rnode->vfs_node.internal_data = rnode;
     rnode->is_static = false;
+    rnode->unlinked = false;
     rnode->dir.children_head = NULL;
 
     kstrncpy(dirent->name, name, VFS_NAME_MAX);
@@ -420,6 +432,87 @@ static int ramfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent) 
     }
 
     return VFS_EOF;
+}
+
+/*
+ * ramfs_unlink - Removes a regular file directory entry from a directory.
+ * Defers physical destruction if the file node has active references (open FDs, CWD).
+ */
+static int ramfs_unlink(vfs_node_t *dir, const char *name) {
+    if (dir == NULL || name == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+    ramfs_node_t *rdir = (ramfs_node_t *)dir->internal_data;
+    if (rdir == NULL) {
+        return VFS_ERR_IO;
+    }
+
+    ramfs_dirent_t *prev = NULL;
+    ramfs_dirent_t *curr = rdir->dir.children_head;
+
+    while (curr != NULL) {
+        if (kstrcmp(curr->name, name) == 0) {
+            break;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    if (curr == NULL) {
+        return VFS_ERR_NOT_FOUND;
+    }
+
+    if (curr->node != NULL && curr->node->type == VFS_NODE_DIRECTORY) {
+        return VFS_ERR_IS_DIR;
+    }
+
+    /* Unlink entry from directory linked list */
+    if (prev == NULL) {
+        rdir->dir.children_head = curr->next;
+    } else {
+        prev->next = curr->next;
+    }
+
+    vfs_node_t *target_node = curr->node;
+    if (!curr->is_static) {
+        kfree(curr);
+    }
+
+    if (target_node != NULL) {
+        ramfs_node_t *target_rnode = (ramfs_node_t *)target_node->internal_data;
+        if (target_rnode != NULL) {
+            target_rnode->unlinked = true;
+        }
+        /*
+         * Lifetime Invariant: If no active references exist (ref_count == 0),
+         * destroy the node immediately. Otherwise, defer destruction until
+         * the last active reference holder calls vfs_node_unref().
+         */
+        if (target_node->ref_count == 0) {
+            ramfs_destroy_node(target_node);
+        }
+    }
+
+    return VFS_OK;
+}
+
+/*
+ * ramfs_release - Callback invoked by vfs_node_unref when ref_count reaches 0.
+ */
+static void ramfs_release(vfs_node_t *node) {
+    if (node == NULL) {
+        return;
+    }
+    ramfs_node_t *rnode = (ramfs_node_t *)node->internal_data;
+    if (rnode == NULL) {
+        return;
+    }
+    if (rnode->unlinked && node->ref_count == 0) {
+        ramfs_destroy_node(node);
+    }
 }
 
 /*
@@ -490,10 +583,13 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_root.vfs_node.type = VFS_NODE_DIRECTORY;
     static_root.vfs_node.size = 0;
     static_root.vfs_node.permissions = 0755;
+    static_root.vfs_node.ref_count = 0;
+    static_root.vfs_node.parent = &static_root.vfs_node;
     static_root.vfs_node.ops = &ramfs_node_ops;
     static_root.vfs_node.fs = &static_fs;
     static_root.vfs_node.internal_data = &static_root;
     static_root.is_static = true;
+    static_root.unlinked = false;
     static_root.dir.children_head = NULL;
 
     /* Initialize static /bin directory */
@@ -501,10 +597,13 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_bin.vfs_node.type = VFS_NODE_DIRECTORY;
     static_bin.vfs_node.size = 0;
     static_bin.vfs_node.permissions = 0755;
+    static_bin.vfs_node.ref_count = 0;
+    static_bin.vfs_node.parent = &static_root.vfs_node;
     static_bin.vfs_node.ops = &ramfs_node_ops;
     static_bin.vfs_node.fs = &static_fs;
     static_bin.vfs_node.internal_data = &static_bin;
     static_bin.is_static = true;
+    static_bin.unlinked = false;
 
     /* Initialize static /bin/test executable */
     size_t test_elf_size = (size_t)(_binary_test_program_elf_end - _binary_test_program_elf_start);
@@ -512,10 +611,13 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_bin_test.vfs_node.type = VFS_NODE_FILE;
     static_bin_test.vfs_node.size = test_elf_size;
     static_bin_test.vfs_node.permissions = 0755;
+    static_bin_test.vfs_node.ref_count = 0;
+    static_bin_test.vfs_node.parent = &static_bin.vfs_node;
     static_bin_test.vfs_node.ops = &ramfs_node_ops;
     static_bin_test.vfs_node.fs = &static_fs;
     static_bin_test.vfs_node.internal_data = &static_bin_test;
     static_bin_test.is_static = true;
+    static_bin_test.unlinked = false;
     static_bin_test.file.data = (uint8_t *)_binary_test_program_elf_start;
     static_bin_test.file.capacity = test_elf_size;
     static_bin_test.file.data_is_static = true;
@@ -525,10 +627,13 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_bin_bad.vfs_node.type = VFS_NODE_FILE;
     static_bin_bad.vfs_node.size = 16;
     static_bin_bad.vfs_node.permissions = 0644;
+    static_bin_bad.vfs_node.ref_count = 0;
+    static_bin_bad.vfs_node.parent = &static_bin.vfs_node;
     static_bin_bad.vfs_node.ops = &ramfs_node_ops;
     static_bin_bad.vfs_node.fs = &static_fs;
     static_bin_bad.vfs_node.internal_data = &static_bin_bad;
     static_bin_bad.is_static = true;
+    static_bin_bad.unlinked = false;
     static_bin_bad.file.data = static_bad_elf_content;
     static_bin_bad.file.capacity = sizeof(static_bad_elf_content);
     static_bin_bad.file.data_is_static = true;
@@ -551,10 +656,13 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_etc.vfs_node.type = VFS_NODE_DIRECTORY;
     static_etc.vfs_node.size = 0;
     static_etc.vfs_node.permissions = 0755;
+    static_etc.vfs_node.ref_count = 0;
+    static_etc.vfs_node.parent = &static_root.vfs_node;
     static_etc.vfs_node.ops = &ramfs_node_ops;
     static_etc.vfs_node.fs = &static_fs;
     static_etc.vfs_node.internal_data = &static_etc;
     static_etc.is_static = true;
+    static_etc.unlinked = false;
     static_etc.dir.children_head = NULL;
 
     /* Initialize static /readme.txt file */
@@ -562,10 +670,13 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_readme.vfs_node.type = VFS_NODE_FILE;
     static_readme.vfs_node.size = 23;
     static_readme.vfs_node.permissions = 0644;
+    static_readme.vfs_node.ref_count = 0;
+    static_readme.vfs_node.parent = &static_root.vfs_node;
     static_readme.vfs_node.ops = &ramfs_node_ops;
     static_readme.vfs_node.fs = &static_fs;
     static_readme.vfs_node.internal_data = &static_readme;
     static_readme.is_static = true;
+    static_readme.unlinked = false;
     static_readme.file.data = static_readme_content;
     static_readme.file.capacity = sizeof(static_readme_content);
     static_readme.file.data_is_static = true;

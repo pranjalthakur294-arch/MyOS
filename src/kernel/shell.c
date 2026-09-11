@@ -72,10 +72,13 @@ static void builtin_elftest(const char *args);
 static void builtin_vfstest(const char *args);
 static void builtin_fdtest(const char *args);
 static void builtin_run(const char *args);
+static void builtin_pwd(const char *args);
+static void builtin_cd(const char *args);
 static void builtin_ls(const char *args);
 static void builtin_cat(const char *args);
 static void builtin_touch(const char *args);
 static void builtin_mkdir(const char *args);
+static void builtin_rm(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -106,10 +109,13 @@ static const struct shell_command commands[] = {
     {"vfstest",     "Test VFS and RAMFS",    builtin_vfstest},
     {"fdtest",      "Test file descriptors", builtin_fdtest},
     {"run",         "Execute ELF from VFS",  builtin_run},
+    {"pwd",         "Print working dir",     builtin_pwd},
+    {"cd",          "Change directory",      builtin_cd},
     {"ls",          "List directory",        builtin_ls},
     {"cat",         "Concatenate file",      builtin_cat},
     {"touch",       "Create empty file",     builtin_touch},
     {"mkdir",       "Create directory",      builtin_mkdir},
+    {"rm",          "Remove file",           builtin_rm},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -183,6 +189,7 @@ static void builtin_about(const char *args) {
     vga_puts("FD Table: Open/Read/Write/Close Active\n");
     vga_puts("Filesystem Exec: run <path> via VFS/FD Active\n");
     vga_puts("FS Commands: ls, cat, touch, mkdir Active\n");
+    vga_puts("CWD/Path Ops: pwd, cd, rm Active\n");
     vga_puts("Input: PS/2 Keyboard (IRQ1 / Vector 0x21)\n");
     vga_puts("Display: VGA 80x25 text buffer\n");
 }
@@ -661,9 +668,78 @@ static int parse_single_path_arg(const char *args, char *out_path, size_t max_le
 }
 
 /*
+ * Built-in Command: pwd
+ * Prints the current working directory of the current process.
+ * Usage: pwd
+ */
+static void builtin_pwd(const char *args) {
+    (void)args;
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
+        if (!proc) {
+            vga_puts("/\n");
+            return;
+        }
+    }
+
+    vfs_node_t *cwd = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
+    char buf[VFS_PATH_MAX];
+    int err = vfs_get_path(cwd, buf, sizeof(buf));
+    if (err == VFS_OK) {
+        vga_puts(buf);
+        vga_putc('\n');
+    } else {
+        vga_puts("/\n");
+    }
+}
+
+/*
+ * Built-in Command: cd
+ * Changes the current working directory of the current process.
+ * Usage: cd <path>
+ */
+static void builtin_cd(const char *args) {
+    char path[VFS_PATH_MAX];
+    int res = parse_single_path_arg(args, path, sizeof(path));
+    if (res != 0) {
+        vga_puts("Usage: cd <path>\n");
+        return;
+    }
+
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
+        if (!proc) {
+            vga_puts("cd: error obtaining process context\n");
+            return;
+        }
+    }
+
+    vfs_node_t *cwd = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
+    vfs_node_t *target_node = NULL;
+    int err = vfs_lookup_from(cwd, path, &target_node);
+    if (err != VFS_OK || target_node == NULL) {
+        vga_puts("cd: ");
+        vga_puts(path);
+        vga_puts(": No such file or directory\n");
+        return;
+    }
+
+    if (target_node->type != VFS_NODE_DIRECTORY) {
+        vga_puts("cd: ");
+        vga_puts(path);
+        vga_puts(": Not a directory\n");
+        return;
+    }
+
+    process_set_cwd(proc, target_node);
+}
+
+/*
  * Built-in Command: ls
  * Lists contents of a directory.
- * Usage: ls [path] (defaults to / if omitted)
+ * Usage: ls [path] (defaults to current working directory if omitted)
  */
 static void builtin_ls(const char *args) {
     char path[VFS_PATH_MAX];
@@ -672,13 +748,21 @@ static void builtin_ls(const char *args) {
         vga_puts("Usage: ls [path]\n");
         return;
     }
-    if (res == -1) {
-        path[0] = '/';
-        path[1] = '\0';
+
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
     }
+    vfs_node_t *cwd = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
 
     vfs_node_t *dir_node = NULL;
-    int err = vfs_lookup(path, &dir_node);
+    int err = VFS_OK;
+    if (res == -1) {
+        dir_node = cwd;
+    } else {
+        err = vfs_lookup_from(cwd, path, &dir_node);
+    }
+
     if (err != VFS_OK || dir_node == NULL) {
         vga_puts("ls: cannot access '");
         vga_puts(path);
@@ -689,7 +773,7 @@ static void builtin_ls(const char *args) {
     if (dir_node->type != VFS_NODE_DIRECTORY) {
         vga_puts("ls: cannot access '");
         vga_puts(path);
-        vga_puts("': Not a directory\n");
+        vga_puts(": Not a directory\n");
         return;
     }
 
@@ -702,7 +786,16 @@ static void builtin_ls(const char *args) {
         }
         if (r != VFS_OK) {
             vga_puts("ls: error reading directory '");
-            vga_puts(path);
+            if (res == -1) {
+                char pbuf[VFS_PATH_MAX];
+                if (vfs_get_path(cwd, pbuf, sizeof(pbuf)) == VFS_OK) {
+                    vga_puts(pbuf);
+                } else {
+                    vga_puts("/");
+                }
+            } else {
+                vga_puts(path);
+            }
             vga_puts("'\n");
             break;
         }
@@ -795,8 +888,14 @@ static void builtin_touch(const char *args) {
         return;
     }
 
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
+    }
+    vfs_node_t *cwd = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
+
     vfs_node_t *node = NULL;
-    int err = vfs_create(path, &node);
+    int err = vfs_create_from(cwd, path, &node);
     if (err != VFS_OK) {
         if (err == VFS_ERR_EXISTS) {
             vga_puts("touch: cannot touch '");
@@ -835,8 +934,14 @@ static void builtin_mkdir(const char *args) {
         return;
     }
 
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
+    }
+    vfs_node_t *cwd = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
+
     vfs_node_t *node = NULL;
-    int err = vfs_mkdir(path, &node);
+    int err = vfs_mkdir_from(cwd, path, &node);
     if (err != VFS_OK) {
         if (err == VFS_ERR_EXISTS) {
             vga_puts("mkdir: cannot create directory '");
@@ -856,6 +961,47 @@ static void builtin_mkdir(const char *args) {
             vga_puts("': Out of memory\n");
         } else {
             vga_puts("mkdir: cannot create directory '");
+            vga_puts(path);
+            vga_puts("': Invalid path\n");
+        }
+    }
+}
+
+/*
+ * Built-in Command: rm
+ * Removes a regular file from the filesystem.
+ * Usage: rm <path>
+ */
+static void builtin_rm(const char *args) {
+    char path[VFS_PATH_MAX];
+    int res = parse_single_path_arg(args, path, sizeof(path));
+    if (res != 0) {
+        vga_puts("Usage: rm <path>\n");
+        return;
+    }
+
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
+        if (!proc) {
+            vga_puts("rm: error obtaining process context\n");
+            return;
+        }
+    }
+
+    vfs_node_t *cwd = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
+    int err = vfs_unlink_from(cwd, path);
+    if (err != VFS_OK) {
+        if (err == VFS_ERR_NOT_FOUND) {
+            vga_puts("rm: cannot remove '");
+            vga_puts(path);
+            vga_puts("': No such file or directory\n");
+        } else if (err == VFS_ERR_IS_DIR) {
+            vga_puts("rm: cannot remove '");
+            vga_puts(path);
+            vga_puts("': Is a directory\n");
+        } else {
+            vga_puts("rm: cannot remove '");
             vga_puts(path);
             vga_puts("': Invalid path\n");
         }

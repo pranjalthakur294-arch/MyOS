@@ -63,6 +63,8 @@ typedef struct vfs_node_ops {
     int (*create)(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
     int (*mkdir)(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
     int (*readdir)(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent);
+    int (*unlink)(vfs_node_t *dir, const char *name);
+    void (*release)(vfs_node_t *node);
 } vfs_node_ops_t;
 
 /*
@@ -74,6 +76,8 @@ struct vfs_node {
     vfs_node_type_t type;
     uint64_t size;
     uint32_t permissions;
+    uint32_t ref_count;              /* Active reference count (CWD, open FDs) */
+    struct vfs_node *parent;         /* Parent directory node (non-owning back-link) */
     vfs_node_ops_t *ops;
     vfs_fs_t *fs;
     void *internal_data;
@@ -102,9 +106,17 @@ struct vfs_fs {
 void vfs_init(void);
 int vfs_mount_root(vfs_fs_t *fs);
 vfs_node_t *vfs_get_root(void);
+void vfs_node_ref(vfs_node_t *node);
+void vfs_node_unref(vfs_node_t *node);
 int vfs_lookup(const char *path, vfs_node_t **out_node);
+int vfs_lookup_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_node);
 int vfs_create(const char *path, vfs_node_t **out_node);
+int vfs_create_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_node);
 int vfs_mkdir(const char *path, vfs_node_t **out_node);
+int vfs_mkdir_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_node);
+int vfs_unlink(const char *path);
+int vfs_unlink_from(vfs_node_t *start_node, const char *path);
+int vfs_get_path(vfs_node_t *node, char *buf, size_t size);
 int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent);
 int vfs_read(vfs_node_t *node, void *buffer, uint64_t offset, size_t size, size_t *bytes_read);
 int vfs_write(vfs_node_t *node, const void *buffer, uint64_t offset, size_t size, size_t *bytes_written);

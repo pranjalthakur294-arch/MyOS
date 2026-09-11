@@ -72,42 +72,74 @@ vfs_node_t *vfs_get_root(void) {
 }
 
 /*
- * vfs_lookup - Resolves an absolute path to a VFS node.
- * Handles repeated slashes, verifies directory traversal, and enforces bounds.
+ * vfs_node_ref - Increments the active reference count of a VFS node.
  */
-int vfs_lookup(const char *path, vfs_node_t **out_node) {
+void vfs_node_ref(vfs_node_t *node) {
+    if (node != NULL) {
+        node->ref_count++;
+    }
+}
+
+/*
+ * vfs_node_unref - Decrements the active reference count of a VFS node.
+ * When the reference count drops to 0, invokes the filesystem's release operation
+ * allowing deferred destruction of unlinked nodes.
+ */
+void vfs_node_unref(vfs_node_t *node) {
+    if (node == NULL) {
+        return;
+    }
+    if (node->ref_count > 0) {
+        node->ref_count--;
+    }
+    if (node->ref_count == 0) {
+        if (node->ops != NULL && node->ops->release != NULL) {
+            node->ops->release(node);
+        }
+    }
+}
+
+/*
+ * vfs_lookup_from - Resolves a path (absolute or relative to start_node) to a VFS node.
+ * Supports '.' (current) and '..' (parent).
+ * Clamps '..' at root so traversal cannot escape above root.
+ */
+int vfs_lookup_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_node) {
     if (path == NULL || out_node == NULL) {
         return VFS_ERR_INVALID;
     }
+    *out_node = NULL;
     if (vfs_root_node == NULL) {
         return VFS_ERR_IO;
     }
 
-    /* Path must be absolute */
-    if (path[0] != '/') {
+    size_t path_len = kstrlen(path);
+    if (path_len == 0) {
         return VFS_ERR_INVALID;
     }
-
-    size_t path_len = kstrlen(path);
     if (path_len >= VFS_PATH_MAX) {
         return VFS_ERR_PATH_TOO_LONG;
     }
 
-    vfs_node_t *curr = vfs_root_node;
+    vfs_node_t *curr = NULL;
     const char *p = path;
 
-    /* Skip leading slashes */
-    while (*p == '/') {
-        p++;
+    if (path[0] == '/') {
+        curr = vfs_root_node;
+        while (*p == '/') {
+            p++;
+        }
+        if (*p == '\0') {
+            *out_node = vfs_root_node;
+            return VFS_OK;
+        }
+    } else {
+        curr = (start_node != NULL) ? start_node : vfs_root_node;
+        if (curr->type != VFS_NODE_DIRECTORY) {
+            return VFS_ERR_NOT_DIR;
+        }
     }
 
-    /* Root path ("/" or "///") */
-    if (*p == '\0') {
-        *out_node = vfs_root_node;
-        return VFS_OK;
-    }
-
-    /* Iterate through path components */
     while (*p != '\0') {
         const char *comp_start = p;
         size_t comp_len = 0;
@@ -126,22 +158,39 @@ int vfs_lookup(const char *path, vfs_node_t **out_node) {
         }
         comp_name[comp_len] = '\0';
 
-        /* Cannot traverse through non-directory nodes */
-        if (curr->type != VFS_NODE_DIRECTORY) {
-            return VFS_ERR_NOT_DIR;
+        /* Special component "." -> stay at curr */
+        if (kstrcmp(comp_name, ".") == 0) {
+            if (curr->type != VFS_NODE_DIRECTORY) {
+                return VFS_ERR_NOT_DIR;
+            }
         }
-        if (curr->ops == NULL || curr->ops->lookup == NULL) {
-            return VFS_ERR_NOT_SUPPORTED;
+        /* Special component ".." -> traverse to parent, clamped at root */
+        else if (kstrcmp(comp_name, "..") == 0) {
+            if (curr->type != VFS_NODE_DIRECTORY) {
+                return VFS_ERR_NOT_DIR;
+            }
+            if (curr == vfs_root_node || curr->parent == NULL || curr->parent == curr) {
+                curr = vfs_root_node;
+            } else {
+                curr = curr->parent;
+            }
+        }
+        /* Normal name lookup */
+        else {
+            if (curr->type != VFS_NODE_DIRECTORY) {
+                return VFS_ERR_NOT_DIR;
+            }
+            if (curr->ops == NULL || curr->ops->lookup == NULL) {
+                return VFS_ERR_NOT_SUPPORTED;
+            }
+            vfs_node_t *next_node = NULL;
+            int err = curr->ops->lookup(curr, comp_name, &next_node);
+            if (err != VFS_OK) {
+                return err;
+            }
+            curr = next_node;
         }
 
-        vfs_node_t *next_node = NULL;
-        int err = curr->ops->lookup(curr, comp_name, &next_node);
-        if (err != VFS_OK) {
-            return err;
-        }
-        curr = next_node;
-
-        /* Skip trailing/redundant slashes */
         while (*p == '/') {
             p++;
         }
@@ -152,19 +201,33 @@ int vfs_lookup(const char *path, vfs_node_t **out_node) {
 }
 
 /*
- * split_parent_and_leaf - Helper to decompose an absolute path into:
- *   - parent directory path (stored in parent_buf)
- *   - leaf name (stored in leaf_buf)
+ * vfs_lookup - Resolves an absolute path to a VFS node.
+ * Preserves strict absolute path enforcement for Stage 11A compatibility.
  */
-static int split_parent_and_leaf(const char *path, char *parent_buf, char *leaf_buf) {
-    if (path == NULL || parent_buf == NULL || leaf_buf == NULL) {
+int vfs_lookup(const char *path, vfs_node_t **out_node) {
+    if (path == NULL || out_node == NULL) {
         return VFS_ERR_INVALID;
     }
     if (path[0] != '/') {
         return VFS_ERR_INVALID;
     }
+    return vfs_lookup_from(vfs_root_node, path, out_node);
+}
+
+/*
+ * split_parent_and_leaf_from - Helper to decompose an absolute or relative path into:
+ *   - parent directory path (stored in parent_buf)
+ *   - leaf name (stored in leaf_buf)
+ */
+static int split_parent_and_leaf_from(const char *path, char *parent_buf, char *leaf_buf) {
+    if (path == NULL || parent_buf == NULL || leaf_buf == NULL) {
+        return VFS_ERR_INVALID;
+    }
 
     size_t len = kstrlen(path);
+    if (len == 0) {
+        return VFS_ERR_INVALID;
+    }
     if (len >= VFS_PATH_MAX) {
         return VFS_ERR_PATH_TOO_LONG;
     }
@@ -174,40 +237,108 @@ static int split_parent_and_leaf(const char *path, char *parent_buf, char *leaf_
         len--;
     }
 
-    /* Root cannot be created/mkdir'd */
-    if (len <= 1 && path[0] == '/') {
-        return VFS_ERR_EXISTS;
+    /* Root "/" cannot be created/unlinked */
+    if (len == 1 && path[0] == '/') {
+        return VFS_ERR_IS_DIR;
     }
 
     /* Find last slash */
-    size_t last_slash = len - 1;
-    while (last_slash > 0 && path[last_slash] != '/') {
-        last_slash--;
-    }
-
-    /* Leaf component starts at last_slash + 1 */
-    size_t leaf_len = len - (last_slash + 1);
-    if (leaf_len == 0 || leaf_len >= VFS_NAME_MAX) {
-        return (leaf_len >= VFS_NAME_MAX) ? VFS_ERR_NAME_TOO_LONG : VFS_ERR_INVALID;
-    }
-
-    for (size_t i = 0; i < leaf_len; i++) {
-        leaf_buf[i] = path[last_slash + 1 + i];
-    }
-    leaf_buf[leaf_len] = '\0';
-
-    /* Parent directory path */
-    if (last_slash == 0) {
-        parent_buf[0] = '/';
-        parent_buf[1] = '\0';
-    } else {
-        for (size_t i = 0; i < last_slash; i++) {
-            parent_buf[i] = path[i];
+    int last_slash = -1;
+    for (int i = (int)len - 1; i >= 0; i--) {
+        if (path[i] == '/') {
+            last_slash = i;
+            break;
         }
-        parent_buf[last_slash] = '\0';
+    }
+
+    if (last_slash >= 0) {
+        size_t leaf_len = len - (size_t)(last_slash + 1);
+        if (leaf_len == 0 || leaf_len >= VFS_NAME_MAX) {
+            return (leaf_len >= VFS_NAME_MAX) ? VFS_ERR_NAME_TOO_LONG : VFS_ERR_INVALID;
+        }
+
+        for (size_t i = 0; i < leaf_len; i++) {
+            leaf_buf[i] = path[last_slash + 1 + i];
+        }
+        leaf_buf[leaf_len] = '\0';
+
+        if (last_slash == 0) {
+            parent_buf[0] = '/';
+            parent_buf[1] = '\0';
+        } else {
+            for (size_t i = 0; i < (size_t)last_slash; i++) {
+                parent_buf[i] = path[i];
+            }
+            parent_buf[last_slash] = '\0';
+        }
+    } else {
+        /* No slash in path -> parent is "." (current directory) */
+        if (len >= VFS_NAME_MAX) {
+            return VFS_ERR_NAME_TOO_LONG;
+        }
+        for (size_t i = 0; i < len; i++) {
+            leaf_buf[i] = path[i];
+        }
+        leaf_buf[len] = '\0';
+
+        parent_buf[0] = '.';
+        parent_buf[1] = '\0';
+    }
+
+    /* Disallow "." and ".." as target leaf names */
+    if (kstrcmp(leaf_buf, ".") == 0 || kstrcmp(leaf_buf, "..") == 0) {
+        return VFS_ERR_IS_DIR;
     }
 
     return VFS_OK;
+}
+
+/*
+ * split_parent_and_leaf - Helper to decompose an absolute path.
+ */
+static int split_parent_and_leaf(const char *path, char *parent_buf, char *leaf_buf) {
+    if (path == NULL || parent_buf == NULL || leaf_buf == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (path[0] != '/') {
+        return VFS_ERR_INVALID;
+    }
+    size_t len = kstrlen(path);
+    while (len > 1 && path[len - 1] == '/') {
+        len--;
+    }
+    if (len <= 1 && path[0] == '/') {
+        return VFS_ERR_EXISTS;
+    }
+    return split_parent_and_leaf_from(path, parent_buf, leaf_buf);
+}
+
+/*
+ * vfs_create_from - Creates a regular file at the path starting from start_node.
+ */
+int vfs_create_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_node) {
+    char parent_path[VFS_PATH_MAX];
+    char leaf_name[VFS_NAME_MAX];
+
+    int err = split_parent_and_leaf_from(path, parent_path, leaf_name);
+    if (err != VFS_OK) {
+        return err;
+    }
+
+    vfs_node_t *parent_node = NULL;
+    err = vfs_lookup_from(start_node, parent_path, &parent_node);
+    if (err != VFS_OK) {
+        return err;
+    }
+
+    if (parent_node->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+    if (parent_node->ops == NULL || parent_node->ops->create == NULL) {
+        return VFS_ERR_NOT_SUPPORTED;
+    }
+
+    return parent_node->ops->create(parent_node, leaf_name, out_node);
 }
 
 /*
@@ -239,6 +370,34 @@ int vfs_create(const char *path, vfs_node_t **out_node) {
 }
 
 /*
+ * vfs_mkdir_from - Creates a directory at the path starting from start_node.
+ */
+int vfs_mkdir_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_node) {
+    char parent_path[VFS_PATH_MAX];
+    char leaf_name[VFS_NAME_MAX];
+
+    int err = split_parent_and_leaf_from(path, parent_path, leaf_name);
+    if (err != VFS_OK) {
+        return err;
+    }
+
+    vfs_node_t *parent_node = NULL;
+    err = vfs_lookup_from(start_node, parent_path, &parent_node);
+    if (err != VFS_OK) {
+        return err;
+    }
+
+    if (parent_node->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+    if (parent_node->ops == NULL || parent_node->ops->mkdir == NULL) {
+        return VFS_ERR_NOT_SUPPORTED;
+    }
+
+    return parent_node->ops->mkdir(parent_node, leaf_name, out_node);
+}
+
+/*
  * vfs_mkdir - Creates a directory at the specified absolute path.
  */
 int vfs_mkdir(const char *path, vfs_node_t **out_node) {
@@ -264,6 +423,98 @@ int vfs_mkdir(const char *path, vfs_node_t **out_node) {
     }
 
     return parent_node->ops->mkdir(parent_node, leaf_name, out_node);
+}
+
+/*
+ * vfs_unlink_from - Unlinks a regular file at the path starting from start_node.
+ */
+int vfs_unlink_from(vfs_node_t *start_node, const char *path) {
+    if (path == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    char parent_path[VFS_PATH_MAX];
+    char leaf_name[VFS_NAME_MAX];
+
+    int err = split_parent_and_leaf_from(path, parent_path, leaf_name);
+    if (err != VFS_OK) {
+        return err;
+    }
+
+    if (kstrcmp(leaf_name, ".") == 0 || kstrcmp(leaf_name, "..") == 0) {
+        return VFS_ERR_IS_DIR;
+    }
+
+    vfs_node_t *parent_node = NULL;
+    err = vfs_lookup_from(start_node, parent_path, &parent_node);
+    if (err != VFS_OK) {
+        return err;
+    }
+
+    if (parent_node->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+    if (parent_node->ops == NULL || parent_node->ops->unlink == NULL) {
+        return VFS_ERR_NOT_SUPPORTED;
+    }
+
+    return parent_node->ops->unlink(parent_node, leaf_name);
+}
+
+/*
+ * vfs_unlink - Unlinks a regular file at the specified absolute path.
+ */
+int vfs_unlink(const char *path) {
+    if (path == NULL || path[0] != '/') {
+        return VFS_ERR_INVALID;
+    }
+    return vfs_unlink_from(vfs_root_node, path);
+}
+
+/*
+ * vfs_get_path - Reconstructs canonical absolute path for a node by traversing parent pointers.
+ * No heap allocation required.
+ */
+int vfs_get_path(vfs_node_t *node, char *buf, size_t size) {
+    if (node == NULL || buf == NULL || size < 2) {
+        return VFS_ERR_INVALID;
+    }
+
+    if (node == vfs_root_node || node->parent == NULL || node->parent == node) {
+        buf[0] = '/';
+        buf[1] = '\0';
+        return VFS_OK;
+    }
+
+    /* Collect component names upwards to root */
+    const char *comps[32];
+    int count = 0;
+    vfs_node_t *curr = node;
+
+    while (curr != vfs_root_node && curr->parent != NULL && curr->parent != curr) {
+        if (count >= 32) {
+            return VFS_ERR_PATH_TOO_LONG;
+        }
+        comps[count++] = curr->name;
+        curr = curr->parent;
+    }
+
+    /* Build string downwards from root */
+    size_t pos = 0;
+    for (int i = count - 1; i >= 0; i--) {
+        if (pos + 1 >= size) {
+            return VFS_ERR_PATH_TOO_LONG;
+        }
+        buf[pos++] = '/';
+        size_t nlen = kstrlen(comps[i]);
+        if (pos + nlen >= size) {
+            return VFS_ERR_PATH_TOO_LONG;
+        }
+        for (size_t j = 0; j < nlen; j++) {
+            buf[pos++] = comps[i][j];
+        }
+    }
+    buf[pos] = '\0';
+    return VFS_OK;
 }
 
 /*

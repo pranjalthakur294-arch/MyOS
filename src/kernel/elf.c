@@ -569,6 +569,8 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     proc->exit_status = 0;
     proc->reaped = false;
     proc->is_elf = true;
+    proc->cwd = vfs_get_root();
+    vfs_node_ref(proc->cwd);
 
     return proc;
 }

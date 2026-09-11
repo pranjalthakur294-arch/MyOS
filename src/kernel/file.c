@@ -116,7 +116,8 @@ int fd_open(void *proc_ptr, const char *path, uint32_t flags) {
 
     /* Resolve path through VFS abstraction */
     vfs_node_t *node = NULL;
-    int vfs_err = vfs_lookup(path, &node);
+    vfs_node_t *start_dir = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
+    int vfs_err = vfs_lookup_from(start_dir, path, &node);
     if (vfs_err != VFS_OK) {
         switch (vfs_err) {
             case VFS_ERR_NOT_FOUND:
@@ -144,6 +145,8 @@ int fd_open(void *proc_ptr, const char *path, uint32_t flags) {
     of->flags = flags;
     of->refcount = 1;
     of->is_static = false;
+
+    vfs_node_ref(node);
 
     proc->fds[fd] = of;
     return fd;
@@ -298,6 +301,10 @@ int fd_close(void *proc_ptr, int fd) {
 
     /* Free dynamically allocated open_file objects */
     if (of->refcount == 0 && !of->is_static) {
+        if (of->type == OPEN_FILE_VFS && of->node != NULL) {
+            vfs_node_unref(of->node);
+            of->node = NULL;
+        }
         kfree(of);
     }
 
@@ -346,10 +353,124 @@ void fd_close_all(void *proc_ptr) {
                 of->refcount--;
             }
             if (of->refcount == 0 && !of->is_static) {
+                if (of->type == OPEN_FILE_VFS && of->node != NULL) {
+                    vfs_node_unref(of->node);
+                    of->node = NULL;
+                }
                 kfree(of);
             }
         }
     }
+}
+
+/*
+ * test_open_unlink_read_lifecycle - Validates Stage 11E open+unlink+read deferred destruction.
+ *
+ * Sequence:
+ *   1. create /tmp/lifetime
+ *   2. open it
+ *   3. write known bytes
+ *   4. unlink /tmp/lifetime
+ *   5. pathname lookup fails
+ *   6. existing FD remains valid
+ *   7. read through existing FD succeeds
+ *   8. close FD
+ *   9. node is finally reclaimable (memory fully reclaimed)
+ */
+static int test_open_unlink_read_lifecycle(process_t *proc) {
+    /* Ensure /tmp directory exists */
+    vfs_node_t *tmp_dir = NULL;
+    int err = vfs_lookup("/tmp", &tmp_dir);
+    if (err != VFS_OK) {
+        err = vfs_mkdir("/tmp", &tmp_dir);
+        if (err != VFS_OK && err != VFS_ERR_EXISTS) {
+            return -1;
+        }
+    }
+
+    /* Baseline heap state before allocating file /tmp/lifetime */
+    heap_stats_t h_before;
+    heap_get_stats(&h_before);
+
+    /* 1. create /tmp/lifetime */
+    vfs_node_t *node = NULL;
+    err = vfs_create("/tmp/lifetime", &node);
+    if (err != VFS_OK || node == NULL) {
+        return -2;
+    }
+
+    /* 2. open it */
+    int fd = fd_open(proc, "/tmp/lifetime", O_RDWR);
+    if (fd < 0) {
+        return -3;
+    }
+    if (node->ref_count != 1) {
+        fd_close(proc, fd);
+        return -4;
+    }
+
+    /* 3. write known bytes */
+    const char *test_data = "LIFETIME_TEST_DATA";
+    int64_t w = fd_write(proc, fd, test_data, 18);
+    if (w != 18) {
+        fd_close(proc, fd);
+        return -5;
+    }
+
+    /* 4. unlink /tmp/lifetime */
+    err = vfs_unlink("/tmp/lifetime");
+    if (err != VFS_OK) {
+        fd_close(proc, fd);
+        return -6;
+    }
+    /* Node must remain alive because open file holds ref_count == 1 */
+    if (node->ref_count != 1) {
+        fd_close(proc, fd);
+        return -7;
+    }
+
+    /* 5. pathname lookup fails */
+    vfs_node_t *lookup_fail = NULL;
+    err = vfs_lookup("/tmp/lifetime", &lookup_fail);
+    if (err != VFS_ERR_NOT_FOUND) {
+        fd_close(proc, fd);
+        return -8;
+    }
+
+    /* 6. existing FD remains valid */
+    if (proc->fds[fd] == NULL || proc->fds[fd]->node != node) {
+        return -9;
+    }
+
+    /* 7. read through existing FD succeeds */
+    proc->fds[fd]->offset = 0;
+    char read_buf[32];
+    int64_t r = fd_read(proc, fd, read_buf, 18);
+    if (r != 18) {
+        fd_close(proc, fd);
+        return -10;
+    }
+    for (int i = 0; i < 18; i++) {
+        if (read_buf[i] != test_data[i]) {
+            fd_close(proc, fd);
+            return -11;
+        }
+    }
+
+    /* 8. close FD */
+    err = fd_close(proc, fd);
+    if (err != 0) {
+        return -12;
+    }
+
+    /* 9. node is finally reclaimable: ref_count == 0, memory reclaimed */
+    heap_stats_t h_after;
+    heap_get_stats(&h_after);
+    if (h_after.used_bytes != h_before.used_bytes) {
+        return -13;
+    }
+
+    return 0;
 }
 
 /*
@@ -361,6 +482,7 @@ int fd_run_tests(void) {
 
     /* Create dummy process context for kernel test */
     process_t test_proc;
+    test_proc.cwd = vfs_get_root();
     fd_init_process(&test_proc);
 
     /* 1. Verify standard streams initialized */
@@ -484,6 +606,13 @@ int fd_run_tests(void) {
         return -1;
     }
     vga_puts("[OK] Write permission enforcement (EACCES)\n");
+
+    /* 9b. Open + Unlink + Read lifecycle validation */
+    if (test_open_unlink_read_lifecycle(&test_proc) != 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Open-unlink-read lifecycle validation failed\n");
+        return -1;
+    }
 
     /* 10. Clean up test process descriptors */
     fd_close_all(&test_proc);

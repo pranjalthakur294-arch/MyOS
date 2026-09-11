@@ -60,6 +60,7 @@ typedef struct process {
     bool reaped;                            /* True if physical frames have been reclaimed */
     bool is_elf;                            /* True if process was loaded from an ELF executable */
     open_file_t *fds[MAX_PROCESS_FDS];      /* Per-process file descriptor table (Stage 11B) */
+    vfs_node_t *cwd;                        /* Current working directory (Stage 11E) */
 } process_t;
 
 /*
@@ -77,6 +78,7 @@ void process_exit(int64_t status);
 process_t *process_get(uint32_t pid);
 process_t *process_current(void);
 uint32_t process_count(void);
+int process_set_cwd(process_t *proc, vfs_node_t *new_dir);
 void process_reap_terminated(void);
 void process_reap_terminated_ex(void *executing_task);
 int process_verify_permissions(const process_t *proc);

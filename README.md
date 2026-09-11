@@ -273,6 +273,36 @@
     - 29 built-in shell commands formatted in a 2-column layout in `help`, occupying only 16 screen rows within the 25-row VGA screen limit.
   - Automated Verification Suite:
     - `test_stage11d.py`: 12-test automated suite covering all 28 stage requirements, negative validation, stress testing, heap stability, and coexistence with Stages 1–11C.
+- **Stage 11E — Process Current Working Directory + Path Resolution + File Lifecycle (Completed)**:
+  - Per-Process Current Working Directory (`cwd`):
+    - Added `vfs_node_t *cwd;` to `struct process` in `process.h`.
+    - PID 0 and all spawned user processes initialize `cwd` to root (`/`) with explicit reference counting (`vfs_node_ref`).
+    - Added `process_set_cwd(process_t *proc, vfs_node_t *new_dir)` in `process.c`: validates directory type (`VFS_NODE_DIRECTORY`), increments `ref_count` on `new_dir`, unreferences prior `proc->cwd`, and assigns new working directory atomically.
+    - Released process `cwd` reference cleanly in `process_reap_terminated_ex` during deferred process reaping.
+  - VFS Hierarchical Navigation and Relative Path Resolution:
+    - Added non-owning back-pointer `struct vfs_node *parent;` to `vfs_node_t` in `vfs.h` (root parent points to root).
+    - Added intrusive reference counting with `vfs_node_ref(node)` and `vfs_node_unref(node)` in `vfs.c`. Invokes `ops->release` when `ref_count` drops to 0.
+    - Implemented `vfs_lookup_from(start_node, path, out_node)`: resolves absolute paths (starting with `/`) from root and relative paths from `start_node`. Supports `.` (stay) and `..` (traverse to parent), clamped at root (`/`'s parent is `/`).
+    - Preserved Stage 11A strict absolute path validation on `vfs_lookup()`.
+    - Added `vfs_get_path(node, buf, size)` in `vfs.c`: climbs parent pointers to reconstruct canonical absolute path without heap allocations.
+    - Added `vfs_create_from`, `vfs_mkdir_from`, and `vfs_unlink_from` supporting relative and absolute path dispatch.
+  - File Unlinking & Deferred Lifecycle:
+    - Added `.unlink` and `.release` function pointers to `vfs_node_ops_t`.
+    - Implemented `ramfs_unlink` and `ramfs_release` in `ramfs.c`: validates target is regular file (rejects directories with `VFS_ERR_IS_DIR`), unlinks directory entry from parent list, frees dirent, and marks node `unlinked = true`.
+    - Dual-condition destruction invariant: unlinked nodes with `ref_count == 0` are destroyed immediately; unlinked nodes with `ref_count > 0` (e.g. held open by active file descriptors) defer memory destruction until the last `fd_close` calls `vfs_node_unref`.
+  - File Descriptor Integration (`file.c`):
+    - Updated `fd_open` to resolve paths via `vfs_lookup_from(proc->cwd ? proc->cwd : vfs_get_root(), path, &node)` and acquire node reference (`vfs_node_ref(node)`).
+    - Updated `fd_close` and `fd_close_all` to release node reference (`vfs_node_unref(of->node)`) upon destroying dynamic `open_file_t` objects.
+  - Shell Filesystem Commands & Enhancements (`shell.c`):
+    - `pwd`: Prints process's current working directory canonical path using `vfs_get_path`.
+    - `cd <path>`: Changes working directory, supporting relative and absolute paths, `.`, `..`, and root clamping. Rejects nonexistent paths, regular files, and excess arguments while preserving CWD and zero memory leaks.
+    - `rm <path>`: Deletes regular files, supporting relative and absolute paths. Rejects directories, root (`/`), `.`, and `..` with clear diagnostics.
+    - Updated existing commands (`ls`, `cat`, `touch`, `mkdir`, and `run`) to resolve relative paths against `proc->cwd`.
+  - Screen Budget Compliance:
+    - 32 built-in commands arranged in a 2-column layout in `help`, occupying 17 screen rows within the 25-row VGA screen limit.
+    - `about` displays verified system status across 21 rows within the 25-row limit.
+  - Automated Verification Suite:
+    - `test_stage11e.py`: 12-test automated verification suite covering boot line budget, initial `pwd`, `cd`, relative navigation, error handling, relative directory creation, relative file ops, `rm` unlinking, `rm` error cases, relative `run test`, repeated stress/heap stability, and multi-subsystem coexistence.
 
 ```text
 Preemptive Timer-Driven Scheduler Architecture:

@@ -85,6 +85,8 @@ void process_init(void) {
     proc_table[0].cr3 = vmm_get_boot_cr3();
     proc_table[0].task = task_get_current();
     proc_table[0].reaped = false;
+    proc_table[0].cwd = vfs_get_root();
+    vfs_node_ref(proc_table[0].cwd);
     fd_init_process(&proc_table[0]);
 
     /* Remaining slots 1..MAX_PROCESSES-1 are initially unused */
@@ -93,6 +95,7 @@ void process_init(void) {
         proc_table[i].state = PROCESS_UNUSED;
         proc_table[i].type = PROCESS_TYPE_USER;
         proc_table[i].reaped = false;
+        proc_table[i].cwd = NULL;
         fd_init_process(&proc_table[i]);
     }
 
@@ -118,16 +121,36 @@ process_t *process_current(void) {
 }
 
 /*
- * process_count - Returns count of active (READY or RUNNING) processes.
+ * process_count - Returns count of active (non-unused) processes.
  */
 uint32_t process_count(void) {
     uint32_t count = 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
-        if (proc_table[i].state == PROCESS_READY || proc_table[i].state == PROCESS_RUNNING) {
+        if (proc_table[i].state != PROCESS_UNUSED) {
             count++;
         }
     }
     return count;
+}
+
+/*
+ * process_set_cwd - Updates the current working directory of a process.
+ * Acquires a reference on the new directory before releasing the previous one.
+ */
+int process_set_cwd(process_t *proc, vfs_node_t *new_dir) {
+    if (!proc || !new_dir) {
+        return VFS_ERR_INVALID;
+    }
+    if (new_dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+
+    vfs_node_ref(new_dir);
+    if (proc->cwd != NULL) {
+        vfs_node_unref(proc->cwd);
+    }
+    proc->cwd = new_dir;
+    return VFS_OK;
 }
 
 /*
@@ -159,6 +182,12 @@ void process_reap_terminated_ex(void *executing_task) {
 
             /* 0. Release all process-owned open file descriptors */
             fd_close_all(proc);
+
+            /* 0b. Release current working directory reference */
+            if (proc->cwd != NULL) {
+                vfs_node_unref(proc->cwd);
+                proc->cwd = NULL;
+            }
 
             /* 1. Free user code physical frame */
             if (proc->code_phys) {
@@ -414,6 +443,8 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
     proc->kernel_stack_top = ((uint64_t)t->stack_base + t->stack_size) & ~0xFULL;
     proc->exit_status = 0;
     proc->reaped = false;
+    proc->cwd = vfs_get_root();
+    vfs_node_ref(proc->cwd);
 
     return proc;
 }
