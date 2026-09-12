@@ -20,6 +20,7 @@
 #include "file.h"
 #include "ata.h"
 #include "block.h"
+#include "pfs.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -98,6 +99,10 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 12a-4. Initialize Generic Block Subsystem & ATA Adapter (Stage 12B) */
     block_init();
     ata_block_register();
+
+    /* 12a-5. Initialize Persistent Filesystem Subsystem (Stage 12C - silent probe) */
+    pfs_init();
+    pfs_mount(block_get("ata0"));
 
     /* 12b. Initialize User Mode Subsystem */
     user_init();

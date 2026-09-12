@@ -15,6 +15,7 @@
 #include "file.h"
 #include "ata.h"
 #include "block.h"
+#include "pfs.h"
 #include <stddef.h>
 
 /*
@@ -85,6 +86,11 @@ static void builtin_diskinfo(const char *args);
 static void builtin_disktest(const char *args);
 static void builtin_blockinfo(const char *args);
 static void builtin_blocktest(const char *args);
+static void builtin_pfsinfo(const char *args);
+static void builtin_pfsformat(const char *args);
+static void builtin_pfsmount(const char *args);
+static void builtin_pfscat(const char *args);
+static void builtin_pfstest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -126,6 +132,11 @@ static const struct shell_command commands[] = {
     {"disktest",    "Test ATA sector I/O",   builtin_disktest},
     {"blockinfo",   "Show block devices",    builtin_blockinfo},
     {"blocktest",   "Test block device I/O", builtin_blocktest},
+    {"pfsinfo",     "Show PFS volume info",  builtin_pfsinfo},
+    {"pfsformat",   "Format PFS volume",     builtin_pfsformat},
+    {"pfsmount",    "Mount PFS volume",      builtin_pfsmount},
+    {"pfscat",      "Read file from PFS",    builtin_pfscat},
+    {"pfstest",     "Run PFS test suite",    builtin_pfstest},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -1423,6 +1434,213 @@ static void builtin_blocktest(const char *args) {
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("Block test passed!\n");
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+}
+
+/*
+ * Built-in Command: pfsinfo
+ * Displays persistent filesystem status and on-disk geometry.
+ */
+static void builtin_pfsinfo(const char *args) {
+    (void)args;
+    if (!pfs_is_mounted()) {
+        block_device_t *dev = block_get("ata0");
+        if (dev != NULL) {
+            pfs_mount(dev);
+        }
+    }
+
+    if (!pfs_is_mounted()) {
+        vga_puts("PFS: Not mounted (no valid filesystem found)\n");
+        return;
+    }
+
+    const pfs_superblock_t *sb = pfs_get_superblock();
+    block_device_t *dev = pfs_get_device();
+    vga_puts("Persistent Filesystem (PFS) Info:\n");
+    vga_puts("Device: ");
+    vga_puts(dev ? block_name(dev) : "unknown");
+    vga_putc('\n');
+    vga_puts("Magic: ");
+    vga_print_hex(sb->magic);
+    vga_puts(" | Version: ");
+    vga_print_dec(sb->version);
+    vga_putc('\n');
+    vga_puts("Sector Size: ");
+    vga_print_dec(sb->sector_size);
+    vga_puts(" | Total Sectors: ");
+    vga_print_dec(sb->total_sectors);
+    vga_putc('\n');
+    vga_puts("Block Bitmap: Sectors ");
+    vga_print_dec(sb->block_bitmap_start);
+    vga_puts("..");
+    vga_print_dec(sb->block_bitmap_start + sb->block_bitmap_sectors - 1);
+    vga_puts(" (");
+    vga_print_dec(sb->block_bitmap_sectors);
+    vga_puts(" secs)\n");
+    vga_puts("Inode Bitmap: Sector ");
+    vga_print_dec(sb->inode_bitmap_start);
+    vga_puts(" | Inode Table: Sectors ");
+    vga_print_dec(sb->inode_table_start);
+    vga_puts("..");
+    vga_print_dec(sb->inode_table_start + sb->inode_table_sectors - 1);
+    vga_putc('\n');
+    vga_puts("Data Region: Sector ");
+    vga_print_dec(sb->data_start);
+    vga_puts(" (");
+    vga_print_dec(sb->data_blocks);
+    vga_puts(" blocks)\n");
+    vga_puts("Free Blocks: ");
+    vga_print_dec(sb->free_blocks);
+    vga_puts(" / ");
+    vga_print_dec(sb->data_blocks);
+    vga_puts(" | Inodes: ");
+    vga_print_dec(sb->inode_count - sb->free_inodes);
+    vga_puts(" / ");
+    vga_print_dec(sb->inode_count);
+    vga_putc('\n');
+}
+
+/*
+ * Built-in Command: pfsformat
+ * Formats a block device with the persistent filesystem.
+ * Usage: pfsformat [device] (defaults to "ata0")
+ */
+static void builtin_pfsformat(const char *args) {
+    char dev_name[BLOCK_NAME_MAX];
+    int res = parse_single_path_arg(args, dev_name, sizeof(dev_name));
+    const char *target = (res == 0) ? dev_name : "ata0";
+
+    block_device_t *dev = block_get(target);
+    if (!dev) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("pfsformat: Device not found: ");
+        vga_puts(target);
+        vga_putc('\n');
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    vga_puts("Formatting ");
+    vga_puts(target);
+    vga_puts(" with PFS... ");
+    int rc = pfs_format(dev);
+    if (rc == PFS_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
+}
+
+/*
+ * Built-in Command: pfsmount
+ * Mounts an existing PFS volume from a block device.
+ * Usage: pfsmount [device] (defaults to "ata0")
+ */
+static void builtin_pfsmount(const char *args) {
+    char dev_name[BLOCK_NAME_MAX];
+    int res = parse_single_path_arg(args, dev_name, sizeof(dev_name));
+    const char *target = (res == 0) ? dev_name : "ata0";
+
+    block_device_t *dev = block_get(target);
+    if (!dev) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("pfsmount: Device not found: ");
+        vga_puts(target);
+        vga_putc('\n');
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    int rc = pfs_mount(dev);
+    if (rc == PFS_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("PFS mounted successfully on ");
+        vga_puts(target);
+        vga_putc('\n');
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("pfsmount: Mount failed (invalid or unformatted filesystem)\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
+}
+
+/*
+ * Built-in Command: pfscat
+ * Reads and prints contents of a file from the mounted PFS root directory.
+ * Usage: pfscat <filename>
+ */
+static void builtin_pfscat(const char *args) {
+    char filename[PFS_NAME_MAX + 1];
+    int res = parse_single_path_arg(args, filename, sizeof(filename));
+    if (res != 0) {
+        vga_puts("Usage: pfscat <filename>\n");
+        return;
+    }
+
+    if (!pfs_is_mounted()) {
+        block_device_t *dev = block_get("ata0");
+        if (dev != NULL) {
+            pfs_mount(dev);
+        }
+    }
+
+    if (!pfs_is_mounted()) {
+        vga_puts("pfscat: Filesystem not mounted\n");
+        return;
+    }
+
+    uint32_t ino = 0;
+    uint8_t type = 0;
+    int rc = pfs_lookup(PFS_ROOT_INODE, filename, &ino, &type);
+    if (rc != PFS_OK) {
+        vga_puts("pfscat: File not found: ");
+        vga_puts(filename);
+        vga_putc('\n');
+        return;
+    }
+
+    if (type != PFS_ENTRY_FILE) {
+        vga_puts("pfscat: Not a regular file: ");
+        vga_puts(filename);
+        vga_putc('\n');
+        return;
+    }
+
+    static char cat_buf[512];
+    uint32_t offset = 0;
+    uint32_t bytes_read = 0;
+    while (pfs_read_file(ino, offset, cat_buf, sizeof(cat_buf) - 1, &bytes_read) == PFS_OK && bytes_read > 0) {
+        cat_buf[bytes_read] = '\0';
+        vga_puts(cat_buf);
+        offset += bytes_read;
+    }
+    vga_putc('\n');
+}
+
+/*
+ * Built-in Command: pfstest
+ * Executes the in-kernel PFS verification suite.
+ */
+static void builtin_pfstest(const char *args) {
+    (void)args;
+    vga_puts("Running PFS in-kernel verification suite...\n");
+    int rc = pfs_run_tests();
+    if (rc == PFS_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("PFS verification suite passed!\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("PFS verification suite FAILED\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
 }
 
 /*

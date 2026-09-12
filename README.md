@@ -362,6 +362,35 @@
   - Verification & Coexistence:
     - `test_stage12b.py`: 8-test automated verification suite covering silent boot, screen budget, `blockinfo` geometry, `blocktest` execution & idempotence, disk absence handling, and full coexistence with Stages 1–12A.
 
+- **Stage 12C: Persistent Filesystem (PFS Foundation)**
+  - Hardware-Independent Persistent Storage (`src/kernel/pfs.h`, `src/kernel/pfs.c`):
+    - Implemented a small educational persistent filesystem operating strictly through the Generic Block Device API (`block_read()`, `block_write()`).
+    - Zero ATA dependencies: no inclusion of `ata.h` and zero port I/O primitives (`inb`, `outb`, `inw`, `outw`).
+    - Zero VFS/RAMFS disruption: RAMFS remains the sole active root filesystem (`/`); PFS is an independent subsystem.
+  - Deterministic On-Disk Geometry (Dynamically Sized from `sector_count`):
+    - Sector 0: Superblock (magic `0x50465331` = `'PFS1'`, version 1, geometry, metadata pointers, free counters).
+    - Sectors 1..16: Block bitmap (tracks 65,454 data blocks on the 32 MiB QEMU disk; 0 = free, 1 = allocated).
+    - Sector 17: Inode bitmap (tracks 512 inodes; Inode 0 reserved sentinel, Inode 1 root directory).
+    - Sectors 18..81: Inode table (512 inodes @ 64 bytes each, 8 inodes per 512-byte sector).
+    - Sectors 82..65535: Data region (65,454 data blocks of 512 bytes each).
+  - Robust Inode & Directory Design:
+    - Direct-block inodes (`PFS_DIRECT_BLOCKS = 8`, maximum file size 4,096 bytes).
+    - Fixed-size directory entries (`sizeof(pfs_dirent_t) == 64`, 8 entries per 512-byte block, up to 64 entries per directory).
+    - Strict allocation rollback: any failure during multi-block allocation or directory linking rolls back all newly allocated blocks and inodes with zero leaks.
+    - Block zeroing: newly allocated data blocks are zeroed before being exposed, preventing stale disk data leaks.
+  - Mount vs Format Separation:
+    - `pfs_mount()` strictly validates on-disk metadata and fails cleanly if unformatted or corrupted without destructively auto-formatting media.
+    - `pfs_format()` explicitly formats the volume and initializes root structures.
+  - Shell Commands (`src/kernel/shell.c`):
+    - `pfsinfo`: Displays volume status, magic, version, sector size, total sectors, metadata regions, and free block/inode counts.
+    - `pfsformat`: Explicitly formats a block device (defaults to `"ata0"`).
+    - `pfsmount`: Mounts an existing PFS volume without formatting.
+    - `pfscat`: Reads and prints file contents from the PFS root directory.
+    - `pfstest`: Runs the full in-kernel verification suite (create, write, read, multi-block, directories, lookup, rollback, corruption rejection).
+  - Verification & Persistence Across Reboot:
+    - Verified cross-reboot persistence: files written in one QEMU boot session are successfully mounted and verified byte-for-byte in subsequent cold reboot sessions.
+    - `test_stage12c.py`: 9-test automated verification suite covering silent boot, geometry, in-kernel test suite, file reading, reboot persistence, absent drive handling, and coexistence with Stages 1–12B.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -496,6 +525,8 @@ MyOS/
         ├── ata.c                # ATA PIO primary master controller driver
         ├── block.h              # Generic block device interface & definitions
         ├── block.c              # Generic block device registry & dispatch
+        ├── pfs.h                # Persistent filesystem on-disk structures & API
+        ├── pfs.c                # Persistent filesystem allocation, ops & tests
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -526,5 +557,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage12b.py
+python3 test_stage12c.py
 ```
