@@ -339,6 +339,29 @@
   - Automated Verification Suite:
     - `test_stage12a.py`: 8-test automated verification suite covering silent boot, screen budget, disk geometry, pattern read/write/verify/restore, idempotence, drive absence, shell command layout, and coexistence with Stages 1–11E.
 
+- **Stage 12B: Generic Block Device Abstraction (`block_device_t`)**
+  - Hardware-Independent Block Layer (`src/kernel/block.h`, `src/kernel/block.c`):
+    - Decouples storage devices from filesystems: `Future Filesystem -> Generic Block Device API -> ATA Adapter -> ATA PIO -> QEMU Disk`.
+    - Higher layers never call `ata_read_sector()` or `ata_write_sector()` directly.
+    - Zero ATA port/register references in `block.h` and `block.c`.
+  - Static Bounded Registry:
+    - Fixed static device table (`MAX_BLOCK_DEVICES = 8`) with zero heap allocation.
+    - O(1) registry tracking device name, sector size (512 bytes), sector count, flags, and function pointers (`read`, `write`).
+  - Standardized Error Reporting:
+    - Dedicated block error codes: `BLOCK_OK` (0), `BLOCK_ERR_INVALID` (-1), `BLOCK_ERR_NOT_FOUND` (-2), `BLOCK_ERR_IO` (-3), `BLOCK_ERR_NOT_READY` (-4), `BLOCK_ERR_RANGE` (-5), `BLOCK_ERR_NOMEM` (-6), `BLOCK_ERR_EXIST` (-7).
+  - ATA Block Device Adapter (`src/kernel/ata.h`, `src/kernel/ata.c`):
+    - Exposes static `block_device_t` with name `"ata0"`.
+    - Adapter callbacks `ata_block_read` and `ata_block_write` translate ATA error codes to `BLOCK_*` errors.
+    - `ata_block_register()` silently registers `"ata0"` if primary master disk is present.
+  - Silent Kernel Boot Initialization:
+    - `block_init()` and `ata_block_register()` invoked silently during boot, preserving the strict 24-row boot screen budget.
+  - Shell Commands (`src/kernel/shell.c`):
+    - `blockinfo`: Iterates registered block devices and reports Name, Type (`ATA`), Sector Size, Sector Count, and Capacity in MiB (using 64-bit integer arithmetic). Reports clean message when no devices are registered.
+    - `blocktest`: Tests generic block API negative validation (NULL checks, non-existent device lookup, unregistered device, out-of-range sector), followed by non-destructive pattern write/read verification on reserved sector 8 and restoration of original contents. Exclusively uses `block_read` and `block_write`.
+    - `diskinfo` and `disktest` preserved intact for direct hardware diagnostics.
+  - Verification & Coexistence:
+    - `test_stage12b.py`: 8-test automated verification suite covering silent boot, screen budget, `blockinfo` geometry, `blocktest` execution & idempotence, disk absence handling, and full coexistence with Stages 1–12A.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -469,6 +492,10 @@ MyOS/
         ├── ramfs.c              # In-memory RAM filesystem implementation & operations
         ├── file.h               # File descriptor table, open_file objects & API
         ├── file.c               # FD table implementation, standard streams & tests
+        ├── ata.h                # ATA PIO disk driver interface & constants
+        ├── ata.c                # ATA PIO primary master controller driver
+        ├── block.h              # Generic block device interface & definitions
+        ├── block.c              # Generic block device registry & dispatch
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -499,5 +526,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage11d.py
+python3 test_stage12b.py
 ```

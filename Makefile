@@ -48,7 +48,7 @@ C_SRCS   := $(SRC_DIR)/kernel/kernel.c $(SRC_DIR)/kernel/vga.c $(SRC_DIR)/kernel
             $(SRC_DIR)/kernel/pmm.c $(SRC_DIR)/kernel/vmm.c $(SRC_DIR)/kernel/heap.c $(SRC_DIR)/kernel/task.c \
             $(SRC_DIR)/kernel/scheduler.c $(SRC_DIR)/kernel/gdt.c $(SRC_DIR)/kernel/user.c $(SRC_DIR)/kernel/syscall.c \
             $(SRC_DIR)/kernel/process.c $(SRC_DIR)/kernel/elf.c $(SRC_DIR)/kernel/vfs.c $(SRC_DIR)/kernel/ramfs.c \
-            $(SRC_DIR)/kernel/file.c $(SRC_DIR)/kernel/ata.c
+            $(SRC_DIR)/kernel/file.c $(SRC_DIR)/kernel/ata.c $(SRC_DIR)/kernel/block.c
 ASM_SRCS := $(SRC_DIR)/arch/x86_64/boot.S $(SRC_DIR)/arch/x86_64/interrupts.S $(SRC_DIR)/arch/x86_64/context_switch.S \
             $(SRC_DIR)/arch/x86_64/user.S $(SRC_DIR)/kernel/elf_image.S
 

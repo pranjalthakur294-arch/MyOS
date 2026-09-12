@@ -58,4 +58,7 @@ uint32_t ata_get_sector_count(void);
 uint32_t ata_get_sector_size(void);
 const char *ata_get_model(void);
 
+/* Generic Block Layer Adapter (Stage 12B) */
+int ata_block_register(void);
+
 #endif /* ATA_H */

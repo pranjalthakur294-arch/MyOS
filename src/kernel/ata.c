@@ -1,4 +1,5 @@
 #include "ata.h"
+#include "block.h"
 #include "io.h"
 
 #define ATA_TIMEOUT_COUNT 2000000
@@ -299,4 +300,57 @@ uint32_t ata_get_sector_size(void) {
 
 const char *ata_get_model(void) {
     return g_ata_model;
+}
+
+/*
+ * Generic Block Layer Adapter Implementation (Stage 12B)
+ */
+static block_device_t s_ata0_device;
+
+static int ata_to_block_error(int ata_err) {
+    switch (ata_err) {
+        case ATA_OK:              return BLOCK_OK;
+        case ATA_ERR_ABSENT:      return BLOCK_ERR_NOT_READY;
+        case ATA_ERR_INVALID:     return BLOCK_ERR_INVALID;
+        case ATA_ERR_TIMEOUT:     return BLOCK_ERR_NOT_READY;
+        case ATA_ERR_CONTROLLER:  return BLOCK_ERR_IO;
+        case ATA_ERR_FAULT:       return BLOCK_ERR_IO;
+        default:                  return BLOCK_ERR_IO;
+    }
+}
+
+static int ata_block_read(block_device_t *dev, uint32_t sector, void *buffer) {
+    (void)dev;
+    int rc = ata_read_sector(sector, buffer);
+    return ata_to_block_error(rc);
+}
+
+static int ata_block_write(block_device_t *dev, uint32_t sector, const void *buffer) {
+    (void)dev;
+    int rc = ata_write_sector(sector, buffer);
+    return ata_to_block_error(rc);
+}
+
+int ata_block_register(void) {
+    if (!g_ata_present) {
+        return BLOCK_OK;
+    }
+
+    const char *name = "ata0";
+    int i = 0;
+    while (name[i] && i < BLOCK_NAME_MAX - 1) {
+        s_ata0_device.name[i] = name[i];
+        i++;
+    }
+    s_ata0_device.name[i] = '\0';
+
+    s_ata0_device.sector_size = g_ata_sector_size;
+    s_ata0_device.sector_count = g_ata_sector_count;
+    s_ata0_device.flags = 0;
+    s_ata0_device.read = ata_block_read;
+    s_ata0_device.write = ata_block_write;
+    s_ata0_device.priv = NULL;
+    s_ata0_device.registered = false;
+
+    return block_register(&s_ata0_device);
 }

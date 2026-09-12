@@ -14,6 +14,7 @@
 #include "vfs.h"
 #include "file.h"
 #include "ata.h"
+#include "block.h"
 #include <stddef.h>
 
 /*
@@ -82,6 +83,8 @@ static void builtin_mkdir(const char *args);
 static void builtin_rm(const char *args);
 static void builtin_diskinfo(const char *args);
 static void builtin_disktest(const char *args);
+static void builtin_blockinfo(const char *args);
+static void builtin_blocktest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -121,6 +124,8 @@ static const struct shell_command commands[] = {
     {"rm",          "Remove file",           builtin_rm},
     {"diskinfo",    "Show ATA disk info",    builtin_diskinfo},
     {"disktest",    "Test ATA sector I/O",   builtin_disktest},
+    {"blockinfo",   "Show block devices",    builtin_blockinfo},
+    {"blocktest",   "Test block device I/O", builtin_blocktest},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -1209,6 +1214,214 @@ static void builtin_disktest(const char *args) {
 
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("Disk test passed!\n");
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+}
+
+/*
+ * Built-in Command: blockinfo
+ * Displays registered generic block devices and their parameters.
+ */
+static void builtin_blockinfo(const char *args) {
+    (void)args;
+    vga_puts("Block Devices\n");
+    vga_puts("-------------\n");
+    size_t count = block_device_count();
+    if (count == 0) {
+        vga_puts("No block devices registered.\n");
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        block_device_t *dev = block_get_by_index(i);
+        if (!dev) {
+            continue;
+        }
+        vga_puts("Name: ");
+        vga_puts(block_name(dev));
+        vga_putc('\n');
+        vga_puts("Type: ATA\n");
+        vga_puts("Sector Size: ");
+        vga_print_dec(block_sector_size(dev));
+        vga_putc('\n');
+        vga_puts("Sectors: ");
+        vga_print_dec(block_sector_count(dev));
+        vga_putc('\n');
+        vga_puts("Capacity: ");
+        uint64_t cap_mb = ((uint64_t)block_sector_count(dev) * (uint64_t)block_sector_size(dev)) / (1024ULL * 1024ULL);
+        vga_print_dec(cap_mb);
+        vga_puts(" MiB\n");
+    }
+}
+
+static uint8_t s_blk_orig[512];
+static uint8_t s_blk_test[512];
+static uint8_t s_blk_verify[512];
+
+/*
+ * Built-in Command: blocktest
+ * Executes generic API validation and a non-destructive verification sequence
+ * on reserved sector 8 through the generic block layer (block_read / block_write).
+ */
+static void builtin_blocktest(const char *args) {
+    (void)args;
+    block_device_t *dev = block_get("ata0");
+    if (!dev) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("No block device available\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    /* Generic Block API Negative Validation */
+    block_device_t dummy = {0};
+    if (block_read(NULL, 0, s_blk_orig) != BLOCK_ERR_INVALID ||
+        block_read(dev, 0, NULL) != BLOCK_ERR_INVALID ||
+        block_read(&dummy, 0, s_blk_orig) != BLOCK_ERR_INVALID ||
+        block_read(dev, block_sector_count(dev), s_blk_orig) != BLOCK_ERR_RANGE ||
+        block_read(dev, 0xFFFFFFFF, s_blk_orig) != BLOCK_ERR_RANGE ||
+        block_write(NULL, 0, s_blk_orig) != BLOCK_ERR_INVALID ||
+        block_write(dev, 0, NULL) != BLOCK_ERR_INVALID ||
+        block_write(&dummy, 0, s_blk_orig) != BLOCK_ERR_INVALID ||
+        block_write(dev, block_sector_count(dev), s_blk_orig) != BLOCK_ERR_RANGE ||
+        block_write(dev, 0xFFFFFFFF, s_blk_orig) != BLOCK_ERR_RANGE ||
+        block_get(NULL) != NULL ||
+        block_get("nonexistent_device") != NULL ||
+        block_register(NULL) != BLOCK_ERR_INVALID ||
+        block_register(dev) != BLOCK_ERR_EXIST) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("Generic API validation failed\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    const uint32_t test_sec = 8;
+    if (test_sec >= block_sector_count(dev)) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("Test sector out of range\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    vga_puts("Generic Block Device Test (ata0, Sector 8):\n");
+
+    /* Step 1: Read original sector */
+    vga_puts("[1/4] Reading original sector... ");
+    int rc = block_read(dev, test_sec, s_blk_orig);
+    if (rc != BLOCK_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED read (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+    vga_puts("OK\n");
+
+    /* Step 2: Write test pattern 1 and verify */
+    vga_puts("[2/4] Writing test pattern 1... ");
+    for (int i = 0; i < 512; i++) {
+        s_blk_test[i] = (uint8_t)(i ^ 0x33);
+        s_blk_verify[i] = 0;
+    }
+    rc = block_write(dev, test_sec, s_blk_test);
+    if (rc != BLOCK_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED write1 (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        block_write(dev, test_sec, s_blk_orig);
+        return;
+    }
+    rc = block_read(dev, test_sec, s_blk_verify);
+    if (rc != BLOCK_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED reread1 (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        block_write(dev, test_sec, s_blk_orig);
+        return;
+    }
+    for (int i = 0; i < 512; i++) {
+        if (s_blk_verify[i] != s_blk_test[i]) {
+            vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+            vga_puts("FAILED mismatch1\n");
+            vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+            block_write(dev, test_sec, s_blk_orig);
+            return;
+        }
+    }
+    vga_puts("OK\n");
+
+    /* Step 3: Write test pattern 2 and verify */
+    vga_puts("[3/4] Writing test pattern 2... ");
+    for (int i = 0; i < 512; i++) {
+        s_blk_test[i] = (uint8_t)(i ^ 0xCC);
+        s_blk_verify[i] = 0;
+    }
+    rc = block_write(dev, test_sec, s_blk_test);
+    if (rc != BLOCK_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED write2 (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        block_write(dev, test_sec, s_blk_orig);
+        return;
+    }
+    rc = block_read(dev, test_sec, s_blk_verify);
+    if (rc != BLOCK_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED reread2 (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        block_write(dev, test_sec, s_blk_orig);
+        return;
+    }
+    for (int i = 0; i < 512; i++) {
+        if (s_blk_verify[i] != s_blk_test[i]) {
+            vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+            vga_puts("FAILED mismatch2\n");
+            vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+            block_write(dev, test_sec, s_blk_orig);
+            return;
+        }
+    }
+    vga_puts("OK\n");
+
+    /* Step 4: Restore original sector and verify */
+    vga_puts("[4/4] Restoring original sector... ");
+    rc = block_write(dev, test_sec, s_blk_orig);
+    if (rc != BLOCK_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED restore write (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+    rc = block_read(dev, test_sec, s_blk_verify);
+    if (rc != BLOCK_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED restore read (rc=");
+        vga_print_dec((uint64_t)(-rc));
+        vga_puts(")\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+    for (int i = 0; i < 512; i++) {
+        if (s_blk_verify[i] != s_blk_orig[i]) {
+            vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+            vga_puts("FAILED restore mismatch\n");
+            vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+            return;
+        }
+    }
+    vga_puts("OK\n");
+
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("Block test passed!\n");
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 }
 
