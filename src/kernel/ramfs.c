@@ -108,6 +108,7 @@ static vfs_fs_t static_fs;
 static ramfs_node_t static_root;
 static ramfs_node_t static_bin;
 static ramfs_node_t static_etc;
+static ramfs_node_t static_disk;
 static ramfs_node_t static_readme;
 
 /* Embedded user-space ELF image symbols exported by elf_image.S */
@@ -124,6 +125,7 @@ static uint8_t static_bad_elf_content[32] = "NOT_AN_ELF_FILE\n";
 
 static ramfs_dirent_t static_dirent_bin;
 static ramfs_dirent_t static_dirent_etc;
+static ramfs_dirent_t static_dirent_disk;
 static ramfs_dirent_t static_dirent_readme;
 
 static uint8_t static_readme_content[32] = "Hello from MyOS RAMFS!\n";
@@ -665,6 +667,20 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_etc.unlinked = false;
     static_etc.dir.children_head = NULL;
 
+    /* Initialize static /disk directory */
+    kstrncpy(static_disk.vfs_node.name, "disk", VFS_NAME_MAX);
+    static_disk.vfs_node.type = VFS_NODE_DIRECTORY;
+    static_disk.vfs_node.size = 0;
+    static_disk.vfs_node.permissions = 0755;
+    static_disk.vfs_node.ref_count = 0;
+    static_disk.vfs_node.parent = &static_root.vfs_node;
+    static_disk.vfs_node.ops = &ramfs_node_ops;
+    static_disk.vfs_node.fs = &static_fs;
+    static_disk.vfs_node.internal_data = &static_disk;
+    static_disk.is_static = true;
+    static_disk.unlinked = false;
+    static_disk.dir.children_head = NULL;
+
     /* Initialize static /readme.txt file */
     kstrncpy(static_readme.vfs_node.name, "readme.txt", VFS_NAME_MAX);
     static_readme.vfs_node.type = VFS_NODE_FILE;
@@ -697,7 +713,12 @@ vfs_fs_t *ramfs_create_fs(void) {
     static_dirent_readme.is_static = true;
     static_dirent_readme.next = &static_dirent_etc;
 
-    static_root.dir.children_head = &static_dirent_readme;
+    kstrncpy(static_dirent_disk.name, "disk", VFS_NAME_MAX);
+    static_dirent_disk.node = &static_disk.vfs_node;
+    static_dirent_disk.is_static = true;
+    static_dirent_disk.next = &static_dirent_readme;
+
+    static_root.dir.children_head = &static_dirent_disk;
 
     /* Initialize static filesystem object */
     static_fs.name = "ramfs";

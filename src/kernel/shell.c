@@ -16,6 +16,7 @@
 #include "ata.h"
 #include "block.h"
 #include "pfs.h"
+#include "mount.h"
 #include <stddef.h>
 
 /*
@@ -91,6 +92,9 @@ static void builtin_pfsformat(const char *args);
 static void builtin_pfsmount(const char *args);
 static void builtin_pfscat(const char *args);
 static void builtin_pfstest(const char *args);
+static void builtin_mount(const char *args);
+static void builtin_umount(const char *args);
+static void builtin_mounttest(const char *args);
 static void builtin_halt(const char *args);
 
 /*
@@ -137,6 +141,7 @@ static const struct shell_command commands[] = {
     {"pfsmount",    "Mount PFS volume",      builtin_pfsmount},
     {"pfscat",      "Read file from PFS",    builtin_pfscat},
     {"pfstest",     "Run PFS test suite",    builtin_pfstest},
+    {"mount",       "Mount / list filesystems", builtin_mount},
     {"halt",        "Halt system",           builtin_halt},
     {NULL,          NULL,                    NULL}
 };
@@ -1644,6 +1649,141 @@ static void builtin_pfstest(const char *args) {
 }
 
 /*
+ * Built-in Command: mount
+ * With no arguments: lists all active mount points.
+ * With arguments: mounts a filesystem: mount <type> <device|none> <path>
+ */
+static void builtin_mount(const char *args) {
+    while (*args == ' ' || *args == '\t') {
+        args++;
+    }
+
+    if (*args == '\0') {
+        vga_puts("Active mounts:\n");
+        for (size_t i = 0; i < MAX_MOUNTS; i++) {
+            mount_entry_t *entry = mount_get_by_index(i);
+            if (entry != NULL && entry->active) {
+                vga_puts(" ");
+                vga_puts(entry->path);
+                vga_puts(" on ");
+                if (entry->dev_name[0] != '\0') {
+                    vga_puts(entry->dev_name);
+                } else {
+                    vga_puts("none");
+                }
+                vga_puts(" type ");
+                vga_puts(entry->type ? entry->type->name : "unknown");
+                vga_putc('\n');
+            }
+        }
+        return;
+    }
+
+    char type_buf[32];
+    char dev_buf[32];
+    char path_buf[128];
+
+    const char *p = args;
+    size_t ti = 0;
+    while (*p != '\0' && *p != ' ' && *p != '\t' && ti + 1 < sizeof(type_buf)) {
+        type_buf[ti++] = *p++;
+    }
+    type_buf[ti] = '\0';
+    while (*p == ' ' || *p == '\t') p++;
+
+    size_t di = 0;
+    while (*p != '\0' && *p != ' ' && *p != '\t' && di + 1 < sizeof(dev_buf)) {
+        dev_buf[di++] = *p++;
+    }
+    dev_buf[di] = '\0';
+    while (*p == ' ' || *p == '\t') p++;
+
+    size_t pi = 0;
+    while (*p != '\0' && *p != ' ' && *p != '\t' && pi + 1 < sizeof(path_buf)) {
+        path_buf[pi++] = *p++;
+    }
+    path_buf[pi] = '\0';
+
+    if (type_buf[0] == '\0' || dev_buf[0] == '\0' || path_buf[0] == '\0') {
+        vga_puts("Usage: mount <type> <device|none> <path>\n");
+        return;
+    }
+
+    const char *dev_arg = (kstrcmp(dev_buf, "none") == 0) ? NULL : dev_buf;
+    int rc = vfs_mount(type_buf, dev_arg, path_buf);
+    if (rc == MOUNT_OK) {
+        vga_puts("Mounted ");
+        vga_puts(path_buf);
+        vga_putc('\n');
+    } else {
+        vga_puts("mount: failed (");
+        if (rc == MOUNT_ERR_EXIST) vga_puts("already mounted");
+        else if (rc == MOUNT_ERR_NOT_FOUND) vga_puts("not found");
+        else if (rc == MOUNT_ERR_NODEV) vga_puts("device not found");
+        else if (rc == MOUNT_ERR_NOT_DIR) vga_puts("not a directory");
+        else if (rc == MOUNT_ERR_CORRUPT) vga_puts("corrupt / unformatted");
+        else if (rc == MOUNT_ERR_FULL) vga_puts("mount table full");
+        else vga_puts("invalid argument");
+        vga_puts(")\n");
+    }
+}
+
+/*
+ * Built-in Command: umount
+ * Unmounts an active filesystem: umount <path>
+ */
+static void builtin_umount(const char *args) {
+    while (*args == ' ' || *args == '\t') {
+        args++;
+    }
+
+    if (*args == '\0') {
+        vga_puts("Usage: umount <path>\n");
+        return;
+    }
+
+    char path_buf[128];
+    const char *p = args;
+    size_t pi = 0;
+    while (*p != '\0' && *p != ' ' && *p != '\t' && pi + 1 < sizeof(path_buf)) {
+        path_buf[pi++] = *p++;
+    }
+    path_buf[pi] = '\0';
+
+    int rc = vfs_unmount(path_buf);
+    if (rc == MOUNT_OK) {
+        vga_puts("Unmounted ");
+        vga_puts(path_buf);
+        vga_putc('\n');
+    } else {
+        vga_puts("umount: failed (");
+        if (rc == MOUNT_ERR_BUSY) vga_puts("busy / root mount");
+        else if (rc == MOUNT_ERR_NOT_FOUND) vga_puts("not mounted");
+        else vga_puts("invalid argument");
+        vga_puts(")\n");
+    }
+}
+
+/*
+ * Built-in Command: mounttest
+ * Executes the in-kernel mount verification suite.
+ */
+static void builtin_mounttest(const char *args) {
+    (void)args;
+    vga_puts("Running mount in-kernel verification suite...\n");
+    int rc = mount_run_tests();
+    if (rc == MOUNT_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("Mount verification suite passed!\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("Mount verification suite FAILED\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
+}
+
+/*
  * Built-in Command: halt
  * Informs the user, disables hardware interrupts (cli), and halts the CPU.
  * Never returns.
@@ -1722,7 +1862,16 @@ void shell_execute(const char *cmd_line) {
     }
     cmd[token_len] = '\0';
 
-    /* 6. Lookup in command table */
+    /* 6. Built-in command dispatch (including unlisted commands to preserve screen budget) */
+    if (kstrcmp(cmd, "umount") == 0) {
+        builtin_umount(args);
+        return;
+    }
+    if (kstrcmp(cmd, "mounttest") == 0) {
+        builtin_mounttest(args);
+        return;
+    }
+
     for (size_t i = 0; commands[i].name != NULL; i++) {
         if (kstrcmp(cmd, commands[i].name) == 0) {
             commands[i].handler(args);

@@ -21,6 +21,7 @@
 #include "ata.h"
 #include "block.h"
 #include "pfs.h"
+#include "mount.h"
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
@@ -86,9 +87,8 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     /* 12. Initialize Kernel Heap */
     heap_init();
 
-    /* 12a. Initialize Virtual File System and RAMFS (Stage 11A) */
+    /* 12a-1. Initialize Virtual File System (Stage 11A) */
     vfs_init();
-    vfs_mount_root(ramfs_create_fs());
 
     /* 12a-2. Initialize File Descriptors Subsystem (Stage 11B) */
     file_init();
@@ -100,9 +100,11 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
     block_init();
     ata_block_register();
 
-    /* 12a-5. Initialize Persistent Filesystem Subsystem (Stage 12C - silent probe) */
+    /* 12a-5. Initialize Persistent Filesystem Subsystem (Stage 12C) */
     pfs_init();
-    pfs_mount(block_get("ata0"));
+
+    /* 12a-6. Initialize Filesystem Mounting Subsystem & Root Mount (Stage 12D) */
+    mount_init();
 
     /* 12b. Initialize User Mode Subsystem */
     user_init();

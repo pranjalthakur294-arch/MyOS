@@ -1,61 +1,124 @@
-# Stage 12A Walkthrough: ATA PIO Primary Master Disk Driver
+# Stage 12D Walkthrough: Filesystem Mounting Subsystem
 
 ## 1. Executive Summary
 
-Stage 12A introduces persistent disk controller support to MyOS through a polling-based ATA Programmed I/O (PIO) driver for the Primary Master channel:
+Stage 12D introduces a clean, modular filesystem mounting abstraction to MyOS. It decouples the Virtual Filesystem (VFS) layer from specific filesystem implementations (`ramfs`, `pfs`) and establishes a formal mount table and filesystem type registry:
 
-1. **16-bit Port I/O Primitives**:
-   - Implemented `inw(uint16_t port)` and `outw(uint16_t port, uint16_t val)` in `src/kernel/io.h` using GCC inline assembly.
-   - Bound explicitly to `%ax` register with volatile semantics to prevent compiler reordering.
-2. **ATA PIO Driver (`src/kernel/ata.h`, `src/kernel/ata.c`)**:
-   - Hardware register definitions for Primary Bus (`0x1F0`–`0x1F7`) and Device Control / Alternate Status (`0x3F6`).
-   - Drive identification (`IDENTIFY`, 0xEC) with floating bus (`0xFF`/`0x00`) and ATAPI/SATA signature checks.
-   - 28-bit LBA single-sector reading (`READ SECTORS`, 0x20) and writing (`WRITE SECTORS`, 0x30).
-   - Alternate Status (`0x3F6`) polling to prevent clearing controller interrupt requests.
-   - Write completion synchronization waiting for `BSY == 0` followed by `FLUSH CACHE` (`0xE7`).
-   - Bounded timeout loops (2,000,000 iterations) preventing system hangs.
-   - Model string byte swapping and space trimming.
-3. **Shell Diagnostics (`src/kernel/shell.c`)**:
-   - `diskinfo`: Displays Primary Master geometry (Model, Sector Size, LBA28 Sector Count, Capacity in MB).
-   - `disktest`: Non-destructive verification sequence on reserved sector LBA 8 (read original, write multi-pattern test data, verify, restore, verify restoration).
-   - Negative parameter validation (rejects NULL pointers, LBA overflow, capacity limits).
-   - Updated `about` and `help` commands within screen budget constraints.
-4. **Build System & Environment (`Makefile`)**:
-   - Added raw 32 MiB disk image generation target `$(BUILD_DIR)/disk.img` via `dd`.
-   - Attached disk image to QEMU via `-hda $(BUILD_DIR)/disk.img`.
-5. **Decoupled Architecture**:
-   - Zero VFS integration: RAMFS remains the sole mounted root filesystem (`/`).
-   - Purely polling-based: IRQ14/IRQ15 remain masked; no interrupts used.
+1. **Filesystem Type Abstraction (`fs_type_t`)**:
+   - Registered driver table with name, driver flags (`FS_REQUIRES_DEV`), and lifecycle operations (`mount`, `unmount`).
+   - Dynamic registry via `fs_register_type()` and `fs_find_type()` supporting up to `MAX_FS_TYPES = 8` drivers.
+   - Built-in adapters for `ramfs` (in-memory) and `pfs` (persistent disk filesystem).
+
+2. **Filesystem Instance & Mount Record Abstraction**:
+   - `fs_instance_t`: Generic instance encapsulating driver reference, device reference, root vnode pointer, and private driver data (`pfs_volume_t` / `ramfs_state_t`).
+   - `mount_entry_t`: Mount table entry linking mount point path, mounted `fs_instance_t`, and backing device string.
+   - Bounded static mount table: `MAX_MOUNTS = 8` slots pre-allocated in `.bss`, with deterministic slot recycling upon unmount.
+
+3. **Mount / Unmount Lifecycle Operations (`vfs_mount`, `vfs_unmount`)**:
+   - Path normalization: strips trailing slashes (e.g., `/disk/` -> `/disk`).
+   - Validation sequence: validates filesystem type existence, device requirement, mount point resolution (must resolve to an existing VFS directory), and rejects duplicate mounts.
+   - Atomic rollback: if driver `mount` fails, mount record and private state are completely reverted.
+   - Unmount protection: root `"/"` mount cannot be unmounted (`MOUNT_ERR_BUSY`).
+   - Double unmount prevention: unmounting an inactive or unknown mount point returns `MOUNT_ERR_NOT_FOUND`.
+
+4. **Zero-Allocation Boot Heap Pristineness**:
+   - The mount point `/disk` is statically defined in `src/kernel/ramfs.c` `.bss` alongside `/bin`, `/etc`, and `/readme.txt`.
+   - Boot-time dynamic heap usage remains strictly `0 bytes` (65512 bytes free, 1 block), guaranteeing 100% regression compatibility with Stages 6–8A.
+
+5. **Shell Commands (`src/kernel/shell.c`)**:
+   - `mount`: Lists all active mount points with filesystem type, device name, and root pointer; or mounts a filesystem: `mount <fstype> <dev> <target>`.
+   - `umount`: Unmounts a mounted target: `umount <target>`.
+   - `mounttest`: Runs the comprehensive 22-step in-kernel verification suite.
+   - Screen budget preserved: exactly 42 entries in `commands[]` maintaining 2-column layout (21 rows + 1 header = 22 rows, total 24 rows with prompt), adhering strictly to the screen height limit.
+
+6. **Strict Scope Boundary**:
+   - Does NOT cross mount points during VFS path lookup or access `/disk/file.txt` through VFS (strictly reserved for Stage 12E).
 
 ---
 
 ## 2. Layering Architecture
 
 ```text
-Shell Commands (diskinfo, disktest)
-      │
-      ▼
-ATA PIO Driver Interface (ata.h, ata.c)
-  ├── ata_init()           - Silent probe during kernel initialization
-  ├── ata_identify()       - Probe drive, parse model string, geometry, LBA capacity
-  ├── ata_read_sector()    - Read 512 bytes via LBA28 + 256-word inw() loop
-  ├── ata_write_sector()   - Write 512 bytes via LBA28 + 256-word outw() loop + FLUSH CACHE
-  └── Informational getters (ata_is_present, ata_get_sector_count, etc.)
-      │
-      ▼
-I/O Port Subsystem (io.h)
-  ├── inb / outb           - 8-bit port I/O
-  └── inw / outw           - 16-bit port I/O (ATA Data Register 0x1F0)
-      │
-      ▼
-Hardware / QEMU IDE Controller
-  ├── Base Ports: 0x1F0 - 0x1F7
-  └── Control Port: 0x3F6 (Alternate Status)
+                  +-----------------------------------+
+                  |        User Shell / Tasks         |
+                  |     (mount, umount, mounttest)    |
+                  +-----------------+-----------------+
+                                    |
+                                    v
+                  +-----------------------------------+
+                  |         VFS Mount Manager         |
+                  |       (mount.h / mount.c)         |
+                  |   - Mount Table (MAX_MOUNTS = 8)  |
+                  |   - Type Registry (MAX_FS = 8)    |
+                  +---------+---------------+---------+
+                            |               |
+             +--------------+               +---------------+
+             v                                              v
++------------------------+                     +------------------------+
+|   RAMFS Type Adapter   |                     |    PFS Type Adapter    |
+|   (ramfs_mount_op)     |                     |    (pfs_mount_op)      |
+|   root mount: "/"      |                     |    mount point: "/disk"|
++-----------+------------+                     +-----------+------------+
+            |                                              |
+            v                                              v
++------------------------+                     +------------------------+
+|      RAMFS Core        |                     |        PFS Core        |
+| (in-memory vnode tree) |                     |  (on-disk superblock,  |
++------------------------+                     |   bitmaps, inodes)     |
+                                               +-----------+------------+
+                                                           |
+                                                           v
+                                               +------------------------+
+                                               |  Generic Block Device  |
+                                               |    (block.h, "ata0")   |
+                                               +-----------+------------+
+                                                           |
+                                                           v
+                                               +------------------------+
+                                               |    ATA PIO Driver      |
+                                               |       (ata.c)          |
+                                               +-----------+------------+
+                                                           |
+                                                           v
+                                               +------------------------+
+                                               |   Hardware Disk (IDE)  |
+                                               +------------------------+
 ```
 
 ---
 
-## 3. Verification & Quality Gates
+## 3. In-Kernel Verification Suite (`mounttest`)
+
+The `mounttest` command executes 22 assertions validating error conditions and state transitions:
+
+| Check # | Description | Expected Result |
+|---|---|---|
+| 1 | `fs_find_type(NULL)` | Returns `NULL` |
+| 2 | `fs_find_type("")` | Returns `NULL` |
+| 3 | `fs_find_type("nonexistent")` | Returns `NULL` |
+| 4 | `fs_find_type("ramfs")` | Returns valid pointer |
+| 5 | `fs_find_type("pfs")` | Returns valid pointer |
+| 6 | `fs_register_type(NULL)` | Returns `MOUNT_ERR_INVAL` |
+| 7 | Re-registering existing `"pfs"` | Returns `MOUNT_ERR_EXISTS` |
+| 8 | `mount_find(NULL)` | Returns `NULL` |
+| 9 | `mount_find("nonexistent")` | Returns `NULL` |
+| 10 | `mount_find("/")` | Finds root mount entry |
+| 11 | `vfs_mount(NULL, ...)` | Returns `MOUNT_ERR_INVAL` |
+| 12 | `vfs_mount("invalid_fs", ...)` | Returns `MOUNT_ERR_NO_FS` |
+| 13 | `vfs_mount("pfs", NULL, "/disk")` | Returns `MOUNT_ERR_NO_DEV` |
+| 14 | `vfs_mount("pfs", "invalid_dev", "/disk")` | Returns `MOUNT_ERR_DEV_NOT_FOUND` |
+| 15 | `vfs_mount("pfs", "ata0", "/nonexistent")` | Returns `MOUNT_ERR_NOT_FOUND` |
+| 16 | `vfs_unmount(NULL)` | Returns `MOUNT_ERR_INVAL` |
+| 17 | `vfs_unmount("/")` | Returns `MOUNT_ERR_BUSY` (protected) |
+| 18 | `vfs_unmount("/disk")` when unmounted | Returns `MOUNT_ERR_NOT_FOUND` |
+| 19 | Mount `"pfs"` on `"ata0"` at `"/disk"` | Returns `MOUNT_OK` |
+| 20 | Duplicate mount on `"/disk"` | Returns `MOUNT_ERR_ALREADY_MOUNTED` |
+| 21 | Unmount `"/disk"` | Returns `MOUNT_OK` |
+| 22 | Slot reuse: Re-mount `"pfs"` on `"/disk"` | Returns `MOUNT_OK` |
+
+---
+
+## 4. Verification & Quality Gates
 
 ### Build Quality
 - Toolchain: `x86_64-linux-gnu-gcc -std=c99 -Wall -Wextra -O2`
@@ -64,6 +127,22 @@ Hardware / QEMU IDE Controller
 - **Git Whitespace Errors (`git diff --check`)**: 0
 
 ### Automated Test Matrix
-All 19 test suites passing 100%:
-- `test_stage12a.py`: **PASS (8/8 tests)**
-- Regression suites (Stages 3A through 11E, and keyboard test): **18/18 PASS**
+All 22 test suites passing 100%:
+- `test_stage12d.py`: **PASS (15/15 tests)**
+  - Test 1: Silent boot within screen budget
+  - Test 2: Shell help screen fits within 24 non-empty lines
+  - Test 3: In-kernel unit check suite (`mounttest` 22/22 assertions)
+  - Test 4: Root mount listing (`mount`)
+  - Test 5: Clean mount lifecycle (`mount pfs ata0 /disk`)
+  - Test 6: Duplicate mount rejection
+  - Test 7: Invalid filesystem rejection
+  - Test 8: Invalid device rejection
+  - Test 9: Unresolvable mount point path rejection
+  - Test 10: Clean unmount lifecycle (`umount /disk`)
+  - Test 11: Root unmount protection (`umount /` busy)
+  - Test 12: Double unmount rejection
+  - Test 13: Mount slot reuse across mount/unmount cycles
+  - Test 14: Cross-reboot persistence with formatted PFS
+  - Test 15: Disk absence handling & coexistence with Stages 1–12C
+- Regression suites (Stages 3A through 12C, plus keyboard): **21/21 PASS**
+  - Total Regression Score: **22/22 (100%)**

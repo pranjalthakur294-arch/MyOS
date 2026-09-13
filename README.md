@@ -391,6 +391,39 @@
     - Verified cross-reboot persistence: files written in one QEMU boot session are successfully mounted and verified byte-for-byte in subsequent cold reboot sessions.
     - `test_stage12c.py`: 9-test automated verification suite covering silent boot, geometry, in-kernel test suite, file reading, reboot persistence, absent drive handling, and coexistence with Stages 1–12B.
 
+- **Stage 12D: Filesystem Mounting Subsystem**
+  - Explicit Filesystem Type Abstraction (`src/kernel/mount.h`, `src/kernel/mount.c`):
+    - `fs_type_t`: Defines filesystem drivers with name, flags (`FS_REQUIRES_DEV`), and operations table (`mount`, `unmount`).
+    - Dynamic type registry: `fs_register_type()` and `fs_find_type()` supporting up to `MAX_FS_TYPES = 8` registered drivers.
+    - Zero dynamic heap allocation: registry and mount table statically allocated in `.bss`.
+  - Mount Table & Instance Abstraction:
+    - `fs_instance_t`: Generic filesystem instance encapsulating type reference, device reference, root node reference, and private filesystem driver state.
+    - `mount_entry_t`: Mount record tracking active mount points (`mount_point`), mounted filesystem instances (`fs`), and device references (`dev`).
+    - Bounded static mount table: `MAX_MOUNTS = 8` slots in `.bss` with deterministic slot reuse upon unmount.
+  - Built-in Filesystem Type Adapters:
+    - `ramfs`: In-memory filesystem registered without `FS_REQUIRES_DEV`, automatically mounted at root `"/"` during boot with unmount protection (`MOUNT_ERR_BUSY`).
+    - `pfs`: Persistent filesystem registered with `FS_REQUIRES_DEV`, mounting persistent volumes on generic block devices (e.g., `ata0`) via `vfs_mount()`.
+  - Robust Lifecycle & Safety Validations:
+    - Path normalization: strips trailing slashes (`/disk/` -> `/disk`).
+    - Mount point resolution check: target mount point must resolve to an existing VFS directory.
+    - Duplicate rejection: prevents mounting duplicate filesystems on existing mount points (`MOUNT_ERR_ALREADY_MOUNTED`).
+    - Atomic rollback: if driver `mount` fails, mount table entry and state are atomically rolled back.
+    - Protected root unmount: unmounting root `"/"` is strictly prohibited.
+    - Safe unmount lifecycle: verifies mount point exists, invokes driver `unmount`, cleans up mount entry, and frees slot for reuse.
+    - Double unmount rejection: unmounting an unmounted or non-existent path returns `MOUNT_ERR_NOT_FOUND`.
+  - Zero-Allocation Boot Heap Pristineness:
+    - Statically defined `"/disk"` directory vnode and dirent in `src/kernel/ramfs.c` `.bss`, eliminating boot-time heap allocations and keeping the heap 100% pristine (`Used: 0 bytes`, `Free: 65512 bytes`).
+  - Shell Integration (`src/kernel/shell.c`):
+    - `mount`: Displays active mount table entries, or mounts a filesystem: `mount <fstype> <dev> <target>`.
+    - `umount`: Unmounts a mounted target: `umount <target>`.
+    - `mounttest`: Runs the comprehensive in-kernel verification suite (22 unit checks).
+  - Scope Boundary Maintained:
+    - Stage 12D exclusively establishes mounting infrastructure and mount-table lifecycle.
+    - Does NOT cross mount points during VFS path lookup or access `/disk/file.txt` (reserved for Stage 12E).
+  - Verification & Test Coverage:
+    - Dedicated `test_stage12d.py`: 15 automated test cases covering boot screen budget, shell help budget, in-kernel 22-test suite, mount listing, duplicate mount rejection, invalid fs rejection, invalid device rejection, unresolvable path rejection, unmount lifecycle, root mount protection, double unmount rejection, mount slot reuse, reboot persistence, absent disk handling, and coexistence with ELF/VFS/Block/Disk.
+    - Regression matrix: Full 22/22 regression suites passing 100%.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -466,6 +499,11 @@ MyOS/
 ├── test_stage11b.py             # Stage 11B automated test suite
 ├── test_stage11c.py             # Stage 11C automated test suite
 ├── test_stage11d.py             # Stage 11D automated test suite
+├── test_stage11e.py             # Stage 11E automated test suite
+├── test_stage12a.py             # Stage 12A automated test suite
+├── test_stage12b.py             # Stage 12B automated test suite
+├── test_stage12c.py             # Stage 12C automated test suite
+├── test_stage12d.py             # Stage 12D automated test suite
 ├── user/
 │   ├── linker.ld                # User ELF linker script (PT_LOAD segments at 0x60000000)
 │   ├── start.S                  # User entry point (_start) with int 0x80 SYS_EXIT
@@ -527,6 +565,8 @@ MyOS/
         ├── block.c              # Generic block device registry & dispatch
         ├── pfs.h                # Persistent filesystem on-disk structures & API
         ├── pfs.c                # Persistent filesystem allocation, ops & tests
+        ├── mount.h              # Filesystem type registry & mount table interface
+        ├── mount.c              # Mount manager, lifecycle ops & test suite
         └── kernel.c             # C entry point (kernel_main)
 ```
 
@@ -557,5 +597,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage12c.py
+python3 test_stage12d.py
 ```
