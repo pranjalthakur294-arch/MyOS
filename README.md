@@ -424,6 +424,38 @@
     - Dedicated `test_stage12d.py`: 15 automated test cases covering boot screen budget, shell help budget, in-kernel 22-test suite, mount listing, duplicate mount rejection, invalid fs rejection, invalid device rejection, unresolvable path rejection, unmount lifecycle, root mount protection, double unmount rejection, mount slot reuse, reboot persistence, absent disk handling, and coexistence with ELF/VFS/Block/Disk.
     - Regression matrix: Full 22/22 regression suites passing 100%.
 
+- **Stage 12E: VFS → Persistent Filesystem Integration**
+  - Architectural Transformation:
+    - Transformed the mount subsystem from a static registration mechanism into an active VFS path-resolution boundary.
+    - Full transparent stack: `Shell/Syscalls -> VFS -> Mount Resolution Layer -> PFS -> Block Device API -> ATA PIO -> QEMU Disk`.
+    - Generic resolution: zero hardcoded paths (`/disk` is resolved dynamically through mount table lookups).
+  - Mount Boundary Crossing:
+    - Forward traversal: when `vfs_lookup_from` resolves a path component matching an active mountpoint directory, it transparently crosses over into the mounted filesystem instance's root vnode.
+    - Reverse `..` traversal: traversing `..` from a mounted root vnode crosses back out into the parent directory of the host mountpoint, while `..` at the root filesystem (`/`) remains strictly clamped at `/`.
+    - Canonical path reconstruction: `vfs_get_path` seamlessly crosses from mounted filesystem roots back into host mountpoint nodes, reconstructing accurate paths (`/disk`, `/disk/subdir`) without heap allocations.
+  - Distinct Mount Root Semantics:
+    - Host mountpoint vnodes (in RAMFS) and mounted root vnodes (in PFS) remain completely distinct objects in memory.
+    - Mount entries hold an active reference (`vfs_node_ref`) to host mountpoint directories throughout the mount lifecycle.
+  - PFS VFS Node Adapter (`src/kernel/pfs.h`, `src/kernel/pfs.c`):
+    - Complete VFS node operations table (`vfs_node_ops_t`): `read`, `write`, `lookup`, `create`, `mkdir`, `readdir`, `unlink`, and `release`.
+    - Strictly bounded static vnode pool (`s_pfs_vnodes[32]`) in `.bss`; zero dynamic allocations during boot or unreferenced caching.
+    - True on-disk file unlinking (`pfs_unlink`): frees direct data blocks, reclaims inode in bitmap, zeroes directory entry on disk, and synchronizes superblock.
+    - Directory enumeration adapter (`pfs_readdir_entry`): reads directory entries by index and extracts inode type and file size.
+  - Full CWD & File Descriptor Compatibility:
+    - Processes can set CWD into mounted persistent filesystems (`cd /disk`, `pwd` prints `/disk`).
+    - Relative path resolution functions from within mounted filesystems (`cat msg.txt`, `touch newfile.txt`).
+    - File descriptors operate uniformly on persistent files via `fd_open`, `fd_read`, `fd_write`, `fd_close`.
+  - Busy Unmount Protection & Lifetime Safety:
+    - Unmount strictly validates reference counts via `mount_check_busy()`: rejects unmount with `MOUNT_ERR_BUSY` if root `ref_count > 1` (e.g. process CWD inside mount) or if any child vnodes are actively held (e.g. open file descriptors).
+    - Closing descriptors and changing directory out of the mountpoint allows clean unmount and subsequent remount.
+  - Cross-Boot Persistence Verification:
+    - Verified byte-for-byte data integrity across distinct, cold QEMU boot processes.
+  - Verification & Shell Commands:
+    - Shell helper `writefile <path> <text>` and in-kernel suite `vfs12etest` added as unlisted commands, preserving the strict 24-row `help` screen budget.
+    - In-kernel suite `vfs12e_run_tests` (15 unit checks): mountpoint resolution, distinct root semantics, VFS file creation, write/read roundtrip, directory creation, subfile operations, directory readdir, cross-boundary `..`, root `..` clamping, `vfs_get_path`, CWD relative resolution, FD open/read/write/close, busy unmount rejection, clean unmount/remount persistence, and VFS unlink cleanup.
+    - Dedicated `test_stage12e.py`: 15 automated test cases passing 100%.
+    - Full regression suites (Stages 12A, 12B, 12C, 12D, 12E) passing 100% with 0 warnings.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 

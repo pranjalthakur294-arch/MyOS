@@ -70,6 +70,7 @@ struct mount_entry {
     fs_instance_t *instance;         /* Associated filesystem instance */
     uint32_t ref_count;              /* Active reference / busy counter */
     fs_instance_t instance_storage;  /* Dedicated static storage for this slot's instance */
+    vfs_node_t *mountpoint_node;     /* VFS directory node in parent filesystem */
 };
 
 /*
@@ -93,9 +94,12 @@ int vfs_mount(const char *type_name, const char *dev_name, const char *mount_poi
 int vfs_unmount(const char *mount_point);
 
 /*
- * Mount Table Inspection API
+ * Mount Table Inspection & Resolution API
  */
 mount_entry_t *mount_find(const char *path);
+mount_entry_t *mount_find_by_mountpoint(vfs_node_t *node);
+mount_entry_t *mount_find_by_root(vfs_node_t *node);
+int mount_check_busy(mount_entry_t *entry);
 mount_entry_t *mount_get_by_index(size_t index);
 size_t mount_count(void);
 
@@ -103,5 +107,6 @@ size_t mount_count(void);
  * In-Kernel Verification Suite
  */
 int mount_run_tests(void);
+int vfs12e_run_tests(void);
 
 #endif /* MOUNT_H */

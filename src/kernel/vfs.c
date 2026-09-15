@@ -1,4 +1,5 @@
 #include "vfs.h"
+#include "mount.h"
 #include "vga.h"
 #include "heap.h"
 #include <stdint.h>
@@ -141,6 +142,16 @@ int vfs_lookup_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_n
     }
 
     while (*p != '\0') {
+        /*
+         * Mount Boundary Forward Crossing:
+         * If curr is currently a mountpoint directory, cross over into the
+         * mounted filesystem root node before resolving the next path component.
+         */
+        mount_entry_t *mp_entry = mount_find_by_mountpoint(curr);
+        if (mp_entry != NULL && mp_entry->instance != NULL && mp_entry->instance->root != NULL) {
+            curr = mp_entry->instance->root;
+        }
+
         const char *comp_start = p;
         size_t comp_len = 0;
         while (*p != '\0' && *p != '/') {
@@ -164,12 +175,27 @@ int vfs_lookup_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_n
                 return VFS_ERR_NOT_DIR;
             }
         }
-        /* Special component ".." -> traverse to parent, clamped at root */
+        /* Special component ".." -> traverse to parent, clamped at root, mount-boundary aware */
         else if (kstrcmp(comp_name, "..") == 0) {
             if (curr->type != VFS_NODE_DIRECTORY) {
                 return VFS_ERR_NOT_DIR;
             }
-            if (curr == vfs_root_node || curr->parent == NULL || curr->parent == curr) {
+            mount_entry_t *root_entry = mount_find_by_root(curr);
+            if (root_entry != NULL) {
+                /*
+                 * Mount Boundary Reverse Crossing:
+                 * Crossing back out of a mounted filesystem root to the parent
+                 * directory containing the mountpoint in the host filesystem.
+                 * If mountpoint has no parent (or is root), clamp at vfs_root_node.
+                 */
+                if (root_entry->mountpoint_node != NULL &&
+                    root_entry->mountpoint_node->parent != NULL &&
+                    root_entry->mountpoint_node->parent != root_entry->mountpoint_node) {
+                    curr = root_entry->mountpoint_node->parent;
+                } else {
+                    curr = vfs_root_node;
+                }
+            } else if (curr == vfs_root_node || curr->parent == NULL || curr->parent == curr) {
                 curr = vfs_root_node;
             } else {
                 curr = curr->parent;
@@ -194,6 +220,15 @@ int vfs_lookup_from(vfs_node_t *start_node, const char *path, vfs_node_t **out_n
         while (*p == '/') {
             p++;
         }
+    }
+
+    /*
+     * If the final resolved node is a mountpoint directory, cross over into the
+     * mounted filesystem root node so caller receives the mounted root.
+     */
+    mount_entry_t *final_mp = mount_find_by_mountpoint(curr);
+    if (final_mp != NULL && final_mp->instance != NULL && final_mp->instance->root != NULL) {
+        curr = final_mp->instance->root;
     }
 
     *out_node = curr;
@@ -479,7 +514,7 @@ int vfs_get_path(vfs_node_t *node, char *buf, size_t size) {
         return VFS_ERR_INVALID;
     }
 
-    if (node == vfs_root_node || node->parent == NULL || node->parent == node) {
+    if (node == vfs_root_node) {
         buf[0] = '/';
         buf[1] = '\0';
         return VFS_OK;
@@ -490,12 +525,33 @@ int vfs_get_path(vfs_node_t *node, char *buf, size_t size) {
     int count = 0;
     vfs_node_t *curr = node;
 
-    while (curr != vfs_root_node && curr->parent != NULL && curr->parent != curr) {
+    while (curr != vfs_root_node) {
+        /*
+         * Mount Boundary Upward Crossing:
+         * If curr is a mounted filesystem root, switch to the mountpoint node
+         * in the parent filesystem so traversal continues up into the parent hierarchy.
+         */
+        mount_entry_t *m = mount_find_by_root(curr);
+        if (m != NULL && m->mountpoint_node != NULL) {
+            curr = m->mountpoint_node;
+            continue;
+        }
+
+        if (curr->parent == NULL || curr->parent == curr) {
+            break;
+        }
+
         if (count >= 32) {
             return VFS_ERR_PATH_TOO_LONG;
         }
         comps[count++] = curr->name;
         curr = curr->parent;
+    }
+
+    if (count == 0) {
+        buf[0] = '/';
+        buf[1] = '\0';
+        return VFS_OK;
     }
 
     /* Build string downwards from root */

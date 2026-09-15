@@ -1,148 +1,109 @@
-# Stage 12D Walkthrough: Filesystem Mounting Subsystem
+# Stage 12E Walkthrough: VFS -> Persistent Filesystem Integration
 
 ## 1. Executive Summary
 
-Stage 12D introduces a clean, modular filesystem mounting abstraction to MyOS. It decouples the Virtual Filesystem (VFS) layer from specific filesystem implementations (`ramfs`, `pfs`) and establishes a formal mount table and filesystem type registry:
-
-1. **Filesystem Type Abstraction (`fs_type_t`)**:
-   - Registered driver table with name, driver flags (`FS_REQUIRES_DEV`), and lifecycle operations (`mount`, `unmount`).
-   - Dynamic registry via `fs_register_type()` and `fs_find_type()` supporting up to `MAX_FS_TYPES = 8` drivers.
-   - Built-in adapters for `ramfs` (in-memory) and `pfs` (persistent disk filesystem).
-
-2. **Filesystem Instance & Mount Record Abstraction**:
-   - `fs_instance_t`: Generic instance encapsulating driver reference, device reference, root vnode pointer, and private driver data (`pfs_volume_t` / `ramfs_state_t`).
-   - `mount_entry_t`: Mount table entry linking mount point path, mounted `fs_instance_t`, and backing device string.
-   - Bounded static mount table: `MAX_MOUNTS = 8` slots pre-allocated in `.bss`, with deterministic slot recycling upon unmount.
-
-3. **Mount / Unmount Lifecycle Operations (`vfs_mount`, `vfs_unmount`)**:
-   - Path normalization: strips trailing slashes (e.g., `/disk/` -> `/disk`).
-   - Validation sequence: validates filesystem type existence, device requirement, mount point resolution (must resolve to an existing VFS directory), and rejects duplicate mounts.
-   - Atomic rollback: if driver `mount` fails, mount record and private state are completely reverted.
-   - Unmount protection: root `"/"` mount cannot be unmounted (`MOUNT_ERR_BUSY`).
-   - Double unmount prevention: unmounting an inactive or unknown mount point returns `MOUNT_ERR_NOT_FOUND`.
-
-4. **Zero-Allocation Boot Heap Pristineness**:
-   - The mount point `/disk` is statically defined in `src/kernel/ramfs.c` `.bss` alongside `/bin`, `/etc`, and `/readme.txt`.
-   - Boot-time dynamic heap usage remains strictly `0 bytes` (65512 bytes free, 1 block), guaranteeing 100% regression compatibility with Stages 6–8A.
-
-5. **Shell Commands (`src/kernel/shell.c`)**:
-   - `mount`: Lists all active mount points with filesystem type, device name, and root pointer; or mounts a filesystem: `mount <fstype> <dev> <target>`.
-   - `umount`: Unmounts a mounted target: `umount <target>`.
-   - `mounttest`: Runs the comprehensive 22-step in-kernel verification suite.
-   - Screen budget preserved: exactly 42 entries in `commands[]` maintaining 2-column layout (21 rows + 1 header = 22 rows, total 24 rows with prompt), adhering strictly to the screen height limit.
-
-6. **Strict Scope Boundary**:
-   - Does NOT cross mount points during VFS path lookup or access `/disk/file.txt` through VFS (strictly reserved for Stage 12E).
-
----
-
-## 2. Layering Architecture
+Stage 12E elevates the filesystem mounting subsystem into an active VFS path-resolution boundary. Prior to this stage, the mount table maintained registration records, but VFS path traversal was unaware of mount points. With Stage 12E, the operating system achieves complete, transparent integration across all storage layers:
 
 ```text
-                  +-----------------------------------+
-                  |        User Shell / Tasks         |
-                  |     (mount, umount, mounttest)    |
-                  +-----------------+-----------------+
-                                    |
-                                    v
-                  +-----------------------------------+
-                  |         VFS Mount Manager         |
-                  |       (mount.h / mount.c)         |
-                  |   - Mount Table (MAX_MOUNTS = 8)  |
-                  |   - Type Registry (MAX_FS = 8)    |
-                  +---------+---------------+---------+
-                            |               |
-             +--------------+               +---------------+
-             v                                              v
-+------------------------+                     +------------------------+
-|   RAMFS Type Adapter   |                     |    PFS Type Adapter    |
-|   (ramfs_mount_op)     |                     |    (pfs_mount_op)      |
-|   root mount: "/"      |                     |    mount point: "/disk"|
-+-----------+------------+                     +-----------+------------+
-            |                                              |
-            v                                              v
-+------------------------+                     +------------------------+
-|      RAMFS Core        |                     |        PFS Core        |
-| (in-memory vnode tree) |                     |  (on-disk superblock,  |
-+------------------------+                     |   bitmaps, inodes)     |
-                                               +-----------+------------+
-                                                           |
-                                                           v
-                                               +------------------------+
-                                               |  Generic Block Device  |
-                                               |    (block.h, "ata0")   |
-                                               +-----------+------------+
-                                                           |
-                                                           v
-                                               +------------------------+
-                                               |    ATA PIO Driver      |
-                                               |       (ata.c)          |
-                                               +-----------+------------+
-                                                           |
-                                                           v
-                                               +------------------------+
-                                               |   Hardware Disk (IDE)  |
-                                               +------------------------+
+User / Shell / Tasks
+         |
+    VFS Layer (vfs.h, vfs.c)
+         |
+  Mount Resolution Boundary
+   |                     |
+   v                     v
+RAMFS ("/")         PFS ("/disk")
+                         |
+                Block Device API (block.h)
+                         |
+                ATA Adapter (ata.c)
+                         |
+                ATA PIO Driver
+                         |
+                QEMU Disk (disk.img)
 ```
 
----
-
-## 3. In-Kernel Verification Suite (`mounttest`)
-
-The `mounttest` command executes 22 assertions validating error conditions and state transitions:
-
-| Check # | Description | Expected Result |
-|---|---|---|
-| 1 | `fs_find_type(NULL)` | Returns `NULL` |
-| 2 | `fs_find_type("")` | Returns `NULL` |
-| 3 | `fs_find_type("nonexistent")` | Returns `NULL` |
-| 4 | `fs_find_type("ramfs")` | Returns valid pointer |
-| 5 | `fs_find_type("pfs")` | Returns valid pointer |
-| 6 | `fs_register_type(NULL)` | Returns `MOUNT_ERR_INVAL` |
-| 7 | Re-registering existing `"pfs"` | Returns `MOUNT_ERR_EXISTS` |
-| 8 | `mount_find(NULL)` | Returns `NULL` |
-| 9 | `mount_find("nonexistent")` | Returns `NULL` |
-| 10 | `mount_find("/")` | Finds root mount entry |
-| 11 | `vfs_mount(NULL, ...)` | Returns `MOUNT_ERR_INVAL` |
-| 12 | `vfs_mount("invalid_fs", ...)` | Returns `MOUNT_ERR_NO_FS` |
-| 13 | `vfs_mount("pfs", NULL, "/disk")` | Returns `MOUNT_ERR_NO_DEV` |
-| 14 | `vfs_mount("pfs", "invalid_dev", "/disk")` | Returns `MOUNT_ERR_DEV_NOT_FOUND` |
-| 15 | `vfs_mount("pfs", "ata0", "/nonexistent")` | Returns `MOUNT_ERR_NOT_FOUND` |
-| 16 | `vfs_unmount(NULL)` | Returns `MOUNT_ERR_INVAL` |
-| 17 | `vfs_unmount("/")` | Returns `MOUNT_ERR_BUSY` (protected) |
-| 18 | `vfs_unmount("/disk")` when unmounted | Returns `MOUNT_ERR_NOT_FOUND` |
-| 19 | Mount `"pfs"` on `"ata0"` at `"/disk"` | Returns `MOUNT_OK` |
-| 20 | Duplicate mount on `"/disk"` | Returns `MOUNT_ERR_ALREADY_MOUNTED` |
-| 21 | Unmount `"/disk"` | Returns `MOUNT_OK` |
-| 22 | Slot reuse: Re-mount `"pfs"` on `"/disk"` | Returns `MOUNT_OK` |
+Key Accomplishments:
+1. **Generic Mount Boundary Traversal**:
+   - `vfs_lookup_from` resolves path components dynamically across mounts without any hardcoded paths.
+   - Forward crossing: resolving a component matching an active mountpoint directory crosses directly into the mounted filesystem instance's root vnode.
+   - Reverse `..` crossing: resolving `..` from a mounted filesystem root ascends back out to the parent directory of the host mountpoint, while root `..` at `/` remains strictly clamped at `/`.
+   - Canonical path reconstruction: `vfs_get_path` ascends through mount roots back into host mountpoint nodes, accurately reconstructing `/disk` and subdirectories (`/disk/subdir`).
+2. **Distinct Mount Root Semantics**:
+   - Host mountpoint vnodes (in RAMFS) and mounted root vnodes (in PFS) remain separate, distinct objects in memory.
+   - The mount entry maintains an active reference (`vfs_node_ref`) to the host mountpoint node throughout the mount lifecycle.
+3. **PFS VFS Adapter**:
+   - Implemented a complete `vfs_node_ops_t` table for PFS: `read`, `write`, `lookup`, `create`, `mkdir`, `readdir`, `unlink`, and `release`.
+   - Bounded static vnode pool (`s_pfs_vnodes[32]`) in `.bss`; zero dynamic allocations during boot or unreferenced caching.
+   - On-disk file unlinking (`pfs_unlink`): reclaims data blocks, frees inode in bitmap, zeroes directory entry on disk, and synchronizes superblock.
+   - Directory entry iteration (`pfs_readdir_entry`): extracts entry name, type, and size by index.
+4. **CWD & File Descriptor Compatibility**:
+   - Processes can set CWD inside mounted filesystems (`cd /disk`, `pwd` reports `/disk`).
+   - Relative paths resolve from CWD within PFS (`cat msg.txt`, `touch file.txt`).
+   - File descriptors (`fd_open`, `fd_read`, `fd_write`, `fd_close`) operate transparently on PFS files through VFS.
+5. **Busy Unmount Protection & Lifetime Safety**:
+   - `mount_check_busy()` rejects unmount with `MOUNT_ERR_BUSY` if root `ref_count > 1` (e.g., process CWD inside mount) or if any child vnodes are actively held (e.g., open file descriptors).
+   - Releasing all descriptors and navigating CWD out of the mountpoint enables clean unmount and subsequent remount.
+6. **Cross-Boot Persistence**:
+   - Verified real multi-session persistence across separate QEMU boot instances.
 
 ---
 
-## 4. Verification & Quality Gates
+## 2. In-Kernel Verification Suite (`vfs12etest`)
 
-### Build Quality
-- Toolchain: `x86_64-linux-gnu-gcc -std=c99 -Wall -Wextra -O2`
+The `vfs12etest` shell command executes a 15-assertion in-kernel verification suite:
+
+| Check # | Description | Expected Result | Verified |
+|---|---|---|---|
+| 1 | Mountpoint path resolution to PFS root | `vfs_lookup("/disk") == disk_mnt->instance->root` | PASS |
+| 2 | Distinct mount root semantics | Mountpoint node != Mounted root node; Inode == 1 | PASS |
+| 3 | Create file via VFS in mounted PFS | `vfs_create("/disk/test12e.txt") == VFS_OK` | PASS |
+| 4 | Write & read file via VFS ops | 32-byte payload roundtrip byte-for-byte | PASS |
+| 5 | Create directory via VFS in mounted PFS | `vfs_mkdir("/disk/dir12e") == VFS_OK` | PASS |
+| 6 | Create & read file inside subdirectory | `vfs_create("/disk/dir12e/sub.txt")` and read roundtrip | PASS |
+| 7 | Directory iteration via `vfs_readdir` | Finds `test12e.txt` (file) and `dir12e` (dir) | PASS |
+| 8 | Cross-boundary `..` traversal | `vfs_lookup("/disk/..") == vfs_root` & `../readme.txt` | PASS |
+| 9 | Root `..` clamping | `vfs_lookup("/..") == vfs_root` | PASS |
+| 10 | Canonical path reconstruction | `vfs_get_path` -> `"/disk"`, `"/disk/dir12e"` | PASS |
+| 11 | CWD relative resolution in mount | CWD at `/disk` resolves `test12e.txt` & `../readme.txt` | PASS |
+| 12 | FD open/write/read/close on PFS file | `fd_open("/disk/test12e.txt", O_RDWR)` -> `fd_read` | PASS |
+| 13 | Busy unmount rejection | Rejected with `MOUNT_ERR_BUSY` while FD open & CWD in mount | PASS |
+| 14 | Clean unmount & remount persistence | File persists across unmount/remount cycle | PASS |
+| 15 | Cleanup test artifacts via VFS unlink | `vfs_unlink` removes files and frees resources | PASS |
+
+---
+
+## 3. Automated Test Matrix (`test_stage12e.py`)
+
+Dedicated test suite verifying 15 automated scenarios across QEMU instances:
+
+- **Test 1 (Boot Integrity and 25-Row Budget)**: PASS
+- **Test 2 (Shell Command Table Layout & 24-Row Budget)**: PASS
+- **Test 3 ('vfs12etest' In-Kernel Suite Execution)**: PASS (15/15 checks)
+- **Test 4 (File Creation via VFS: `touch /disk/shell_test.txt`)**: PASS
+- **Test 5 (Write & Cat via VFS/FD: `writefile /disk/msg.txt HelloFrom12E`)**: PASS
+- **Test 6 (Subdirectory & Subfile Operations)**: PASS
+- **Test 7 (Directory Iteration: `ls /disk`)**: PASS
+- **Test 8 (CWD Integration into Mount: `cd /disk; pwd`)**: PASS
+- **Test 9 (Relative Path Operations from CWD in Mount)**: PASS
+- **Test 10 (Cross-Boundary `..` Traversal: `cat ../readme.txt`)**: PASS
+- **Test 11 (Root `..` Clamping: `cd /; cd ..; pwd`)**: PASS
+- **Test 12 (Return to Parent via `cd ..`: `cd /disk; cd ..; pwd`)**: PASS
+- **Test 13 (File Deletion via VFS: `rm /disk/shell_test.txt`)**: PASS
+- **Test 14 (Busy Unmount Rejection When CWD Inside Mount)**: PASS
+- **Test 15 (Cross-Boot Persistence Across Separate QEMU Sessions)**: PASS
+
+---
+
+## 4. Full Regression Summary
+
+- `test_stage12a.py`: **8/8 PASS** (100%)
+- `test_stage12b.py`: **8/8 PASS** (100%)
+- `test_stage12c.py`: **10/10 PASS** (100%)
+- `test_stage12d.py`: **15/15 PASS** (100%)
+- `test_stage12e.py`: **15/15 PASS** (100%)
+- **Total Stage 12 Matrix**: **56/56 PASS (100%)**
 - **Compiler Warnings**: 0
 - **Linker Warnings**: 0
-- **Git Whitespace Errors (`git diff --check`)**: 0
-
-### Automated Test Matrix
-All 22 test suites passing 100%:
-- `test_stage12d.py`: **PASS (15/15 tests)**
-  - Test 1: Silent boot within screen budget
-  - Test 2: Shell help screen fits within 24 non-empty lines
-  - Test 3: In-kernel unit check suite (`mounttest` 22/22 assertions)
-  - Test 4: Root mount listing (`mount`)
-  - Test 5: Clean mount lifecycle (`mount pfs ata0 /disk`)
-  - Test 6: Duplicate mount rejection
-  - Test 7: Invalid filesystem rejection
-  - Test 8: Invalid device rejection
-  - Test 9: Unresolvable mount point path rejection
-  - Test 10: Clean unmount lifecycle (`umount /disk`)
-  - Test 11: Root unmount protection (`umount /` busy)
-  - Test 12: Double unmount rejection
-  - Test 13: Mount slot reuse across mount/unmount cycles
-  - Test 14: Cross-reboot persistence with formatted PFS
-  - Test 15: Disk absence handling & coexistence with Stages 1–12C
-- Regression suites (Stages 3A through 12C, plus keyboard): **21/21 PASS**
-  - Total Regression Score: **22/22 (100%)**
+- **Boot Heap Invariant**: `Used: 0 bytes`, `Free: 65512 bytes` (100% preserved)
+- **Screen Budget**: All outputs fit strictly within 24 rows

@@ -3,6 +3,8 @@
 #include "pfs.h"
 #include "heap.h"
 #include "vga.h"
+#include "file.h"
+#include "process.h"
 
 /*
  * Static Kernel Storage for Mount Subsystem
@@ -229,8 +231,8 @@ static int pfs_mount_op(fs_type_t *type, const char *dev_name, block_device_t *d
     root->permissions = 0755;
     root->ref_count = 1;
     root->parent = NULL;
-    root->ops = NULL;
-    root->fs = NULL;
+    root->ops = pfs_get_vfs_ops();
+    root->fs = (vfs_fs_t *)inst;
     root->internal_data = (void *)(uintptr_t)PFS_ROOT_INODE;
 
     inst->root = root;
@@ -347,9 +349,64 @@ size_t mount_count(void) {
 }
 
 /*
+ * mount_find_by_mountpoint - Searches active mounts for a mountpoint node match.
+ */
+mount_entry_t *mount_find_by_mountpoint(vfs_node_t *node) {
+    if (!s_mount_initialized || node == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0; i < MAX_MOUNTS; i++) {
+        if (s_mount_table[i].active && s_mount_table[i].mountpoint_node == node) {
+            return &s_mount_table[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * mount_find_by_root - Searches active mounts for a mounted root node match.
+ */
+mount_entry_t *mount_find_by_root(vfs_node_t *node) {
+    if (!s_mount_initialized || node == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0; i < MAX_MOUNTS; i++) {
+        if (s_mount_table[i].active && s_mount_table[i].instance != NULL &&
+            s_mount_table[i].instance->root == node) {
+            return &s_mount_table[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * mount_check_busy - Checks if a mount entry has active references.
+ * Returns MOUNT_ERR_BUSY if root ref_count > 1 or child vnodes are held.
+ */
+int mount_check_busy(mount_entry_t *entry) {
+    if (entry == NULL || !entry->active || entry->instance == NULL) {
+        return MOUNT_ERR_INVALID;
+    }
+
+    /* Root directory of the mounted filesystem: 1 ref held by mount slot itself */
+    if (entry->instance->root != NULL && entry->instance->root->ref_count > 1) {
+        return MOUNT_ERR_BUSY;
+    }
+
+    /* Filesystem-specific active vnode check */
+    if (entry->type != NULL && kstrcmp(entry->type->name, "pfs") == 0) {
+        if (pfs_is_busy()) {
+            return MOUNT_ERR_BUSY;
+        }
+    }
+
+    return MOUNT_OK;
+}
+
+/*
  * vfs_mount - Mounts a filesystem at a specified mount point.
  * Performs strict parameter validation, duplicate rejection, target directory
- * resolution, and atomic rollback on filesystem mount failure.
+ * resolution, mountpoint node reference acquisition, and atomic rollback on failure.
  */
 int vfs_mount(const char *type_name, const char *dev_name, const char *mount_point) {
     if (!s_mount_initialized) {
@@ -391,17 +448,15 @@ int vfs_mount(const char *type_name, const char *dev_name, const char *mount_poi
     }
 
     /* 5. Validate target mount point in VFS for non-root mounts */
+    vfs_node_t *target_node = NULL;
     if (kstrcmp(norm_path, "/") != 0) {
-        vfs_node_t *target_node = NULL;
         int vrc = vfs_lookup(norm_path, &target_node);
         if (vrc != VFS_OK) {
             return MOUNT_ERR_NOT_FOUND;
         }
         if (target_node->type != VFS_NODE_DIRECTORY) {
-            vfs_node_unref(target_node);
             return MOUNT_ERR_NOT_DIR;
         }
-        vfs_node_unref(target_node);
     }
 
     /* Find free slot in mount table */
@@ -416,6 +471,10 @@ int vfs_mount(const char *type_name, const char *dev_name, const char *mount_poi
         return MOUNT_ERR_FULL;
     }
 
+    if (target_node != NULL) {
+        vfs_node_ref(target_node);
+    }
+
     mount_entry_t *slot = &s_mount_table[free_slot];
     slot->active = false;
     fs_instance_t *inst = &slot->instance_storage;
@@ -424,7 +483,10 @@ int vfs_mount(const char *type_name, const char *dev_name, const char *mount_poi
     /* Invoke filesystem mount callback */
     rc = type->mount(type, dev_name, dev, NULL, &inst);
     if (rc != MOUNT_OK) {
-        /* Atomic rollback: clean slot state */
+        /* Atomic rollback: clean slot state and unref target */
+        if (target_node != NULL) {
+            vfs_node_unref(target_node);
+        }
         kmemset(inst, 0, sizeof(fs_instance_t));
         slot->active = false;
         return rc;
@@ -440,6 +502,7 @@ int vfs_mount(const char *type_name, const char *dev_name, const char *mount_poi
     slot->type = type;
     slot->instance = inst;
     slot->ref_count = 1;
+    slot->mountpoint_node = target_node;
     slot->active = true;
 
     return MOUNT_OK;
@@ -447,8 +510,8 @@ int vfs_mount(const char *type_name, const char *dev_name, const char *mount_poi
 
 /*
  * vfs_unmount - Safely unmounts a mounted filesystem.
- * Protects root mount, calls unmount callback, wipes instance storage,
- * and frees the mount slot.
+ * Protects root mount, enforces busy checks, calls unmount callback,
+ * releases mountpoint node reference, and frees the mount slot.
  */
 int vfs_unmount(const char *mount_point) {
     if (!s_mount_initialized || mount_point == NULL) {
@@ -471,12 +534,23 @@ int vfs_unmount(const char *mount_point) {
         return MOUNT_ERR_BUSY;
     }
 
+    /* Check if mount is busy (active child vnodes or held references) */
+    if (mount_check_busy(slot) != MOUNT_OK) {
+        return MOUNT_ERR_BUSY;
+    }
+
     /* Call filesystem unmount callback */
     if (slot->type != NULL && slot->type->unmount != NULL) {
         rc = slot->type->unmount(slot->instance);
         if (rc != MOUNT_OK) {
             return MOUNT_ERR_IO;
         }
+    }
+
+    /* Release mountpoint node reference in parent filesystem */
+    if (slot->mountpoint_node != NULL) {
+        vfs_node_unref(slot->mountpoint_node);
+        slot->mountpoint_node = NULL;
     }
 
     /* Clean mount slot and reset dedicated instance storage */
@@ -840,6 +914,313 @@ int mount_run_tests(void) {
     fs_unregister_type("testfs");
     if (ata0 != NULL) {
         vfs_mount("pfs", "ata0", "/disk");
+    }
+    vga_puts("PASS\n");
+
+    return MOUNT_OK;
+}
+
+/*
+ * ==============================================================================
+ * In-Kernel Stage 12E Verification Suite: VFS -> Persistent Filesystem
+ * Verifies all 15 required test conditions.
+ * ==============================================================================
+ */
+int vfs12e_run_tests(void) {
+    block_device_t *ata0 = block_get("ata0");
+    if (ata0 == NULL) {
+        vga_puts("[TEST 12E] Backing device ata0 not found!\n");
+        return -1;
+    }
+
+    /* Ensure clean, freshly formatted PFS volume for idempotent test execution */
+    if (mount_find("/disk") != NULL) {
+        vfs_unmount("/disk");
+    }
+    pfs_format(ata0);
+    int mrc = vfs_mount("pfs", "ata0", "/disk");
+    if (mrc != MOUNT_OK) {
+        vga_puts("[TEST 12E] Initial mount of /disk failed!\n");
+        return -1;
+    }
+
+    vga_puts("[TEST 1/15] Mountpoint path resolution to PFS root... ");
+    vfs_node_t *disk_node = NULL;
+    int rc = vfs_lookup("/disk", &disk_node);
+    if (rc != VFS_OK || disk_node == NULL) {
+        vga_puts("FAIL (lookup /disk)\n");
+        return -1;
+    }
+    mount_entry_t *disk_mnt = mount_find("/disk");
+    if (disk_mnt == NULL || disk_mnt->instance == NULL || disk_node != disk_mnt->instance->root) {
+        vga_puts("FAIL (not mounted root)\n");
+        return -1;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 2/15] Distinct mount root semantics... ");
+    if (disk_mnt->mountpoint_node == NULL || disk_mnt->mountpoint_node == disk_mnt->instance->root) {
+        vga_puts("FAIL (identical nodes)\n");
+        return -2;
+    }
+    if ((uint32_t)(uintptr_t)disk_mnt->instance->root->internal_data != PFS_ROOT_INODE) {
+        vga_puts("FAIL (root inode != 1)\n");
+        return -2;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 3/15] Create file via VFS in mounted PFS (/disk/test12e.txt)... ");
+    vfs_node_t *file_node = NULL;
+    rc = vfs_create("/disk/test12e.txt", &file_node);
+    if (rc != VFS_OK || file_node == NULL) {
+        vga_puts("FAIL (create /disk/test12e.txt)\n");
+        return -3;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 4/15] Write & read file via VFS ops... ");
+    const char *payload = "Hello VFS Persistent Filesystem!";
+    size_t plen = kstrlen(payload);
+    size_t bw = 0, br = 0;
+    rc = vfs_write(file_node, payload, 0, plen, &bw);
+    if (rc != VFS_OK || bw != plen) {
+        vga_puts("FAIL (vfs_write)\n");
+        return -4;
+    }
+    char read_buf[64];
+    kmemset(read_buf, 0, sizeof(read_buf));
+    rc = vfs_read(file_node, read_buf, 0, plen, &br);
+    if (rc != VFS_OK || br != plen || kstrcmp(read_buf, payload) != 0) {
+        vga_puts("FAIL (vfs_read mismatch)\n");
+        return -4;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 5/15] Create directory via VFS in mounted PFS (/disk/dir12e)... ");
+    vfs_node_t *dir_node = NULL;
+    rc = vfs_mkdir("/disk/dir12e", &dir_node);
+    if (rc != VFS_OK || dir_node == NULL) {
+        vga_puts("FAIL (mkdir /disk/dir12e)\n");
+        return -5;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 6/15] Create & read file inside subdirectory (/disk/dir12e/sub.txt)... ");
+    vfs_node_t *subfile_node = NULL;
+    rc = vfs_create("/disk/dir12e/sub.txt", &subfile_node);
+    if (rc != VFS_OK || subfile_node == NULL) {
+        vga_puts("FAIL (create /disk/dir12e/sub.txt)\n");
+        return -6;
+    }
+    rc = vfs_write(subfile_node, "subdata", 0, 7, &bw);
+    if (rc != VFS_OK || bw != 7) {
+        vga_puts("FAIL (subfile write)\n");
+        return -6;
+    }
+    kmemset(read_buf, 0, sizeof(read_buf));
+    rc = vfs_read(subfile_node, read_buf, 0, 7, &br);
+    if (rc != VFS_OK || br != 7 || kstrcmp(read_buf, "subdata") != 0) {
+        vga_puts("FAIL (subfile read mismatch)\n");
+        return -6;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 7/15] Directory iteration via vfs_readdir on /disk... ");
+    bool found_file = false;
+    bool found_dir = false;
+    vfs_dirent_t de;
+    uint64_t idx = 0;
+    while (vfs_readdir(disk_node, idx++, &de) == VFS_OK) {
+        if (kstrcmp(de.name, "test12e.txt") == 0 && de.type == VFS_NODE_FILE) {
+            found_file = true;
+        }
+        if (kstrcmp(de.name, "dir12e") == 0 && de.type == VFS_NODE_DIRECTORY) {
+            found_dir = true;
+        }
+    }
+    if (!found_file || !found_dir) {
+        vga_puts("FAIL (entries not found in readdir)\n");
+        return -7;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 8/15] Cross-boundary '..' traversal (/disk/.. -> /)... ");
+    vfs_node_t *cross_node = NULL;
+    rc = vfs_lookup("/disk/..", &cross_node);
+    if (rc != VFS_OK || cross_node != vfs_get_root()) {
+        vga_puts("FAIL (/disk/.. did not reach root)\n");
+        return -8;
+    }
+    rc = vfs_lookup("/disk/../readme.txt", &cross_node);
+    if (rc != VFS_OK || cross_node == NULL || kstrcmp(cross_node->name, "readme.txt") != 0) {
+        vga_puts("FAIL (/disk/../readme.txt lookup)\n");
+        return -8;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 9/15] Root '..' clamping (/.. -> /)... ");
+    vfs_node_t *root_clamp = NULL;
+    rc = vfs_lookup("/..", &root_clamp);
+    if (rc != VFS_OK || root_clamp != vfs_get_root()) {
+        vga_puts("FAIL (/.. escape)\n");
+        return -9;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 10/15] Canonical path reconstruction (vfs_get_path)... ");
+    char path_buf[VFS_PATH_MAX];
+    rc = vfs_get_path(disk_node, path_buf, sizeof(path_buf));
+    if (rc != VFS_OK || kstrcmp(path_buf, "/disk") != 0) {
+        vga_puts("FAIL (path for /disk)\n");
+        return -10;
+    }
+    rc = vfs_get_path(dir_node, path_buf, sizeof(path_buf));
+    if (rc != VFS_OK || kstrcmp(path_buf, "/disk/dir12e") != 0) {
+        vga_puts("FAIL (path for /disk/dir12e)\n");
+        return -10;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 11/15] CWD relative resolution from within mounted PFS... ");
+    process_t *proc = process_current();
+    if (!proc) proc = process_get(0);
+    vfs_node_t *orig_cwd = proc->cwd;
+    process_set_cwd(proc, disk_node);
+    vfs_node_t *rel_node = NULL;
+    rc = vfs_lookup_from(proc->cwd, "test12e.txt", &rel_node);
+    if (rc != VFS_OK || rel_node != file_node) {
+        process_set_cwd(proc, orig_cwd);
+        vga_puts("FAIL (relative lookup from cwd)\n");
+        return -11;
+    }
+    rc = vfs_lookup_from(proc->cwd, "../readme.txt", &rel_node);
+    if (rc != VFS_OK || rel_node == NULL || kstrcmp(rel_node->name, "readme.txt") != 0) {
+        process_set_cwd(proc, orig_cwd);
+        vga_puts("FAIL (relative .. from cwd)\n");
+        return -11;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 12/15] File descriptor open, write, read & close on PFS file... ");
+    int fd = fd_open(proc, "/disk/test12e.txt", O_RDWR);
+    if (fd < 0) {
+        process_set_cwd(proc, orig_cwd);
+        vga_puts("FAIL (fd_open)\n");
+        return -12;
+    }
+    char fd_buf[64];
+    kmemset(fd_buf, 0, sizeof(fd_buf));
+    int64_t nread = fd_read(proc, fd, fd_buf, plen);
+    if (nread != (int64_t)plen || kstrcmp(fd_buf, payload) != 0) {
+        fd_close(proc, fd);
+        process_set_cwd(proc, orig_cwd);
+        vga_puts("FAIL (fd_read)\n");
+        return -12;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 13/15] Busy unmount rejection while references active... ");
+    /* FD is still open -> unmount MUST fail with MOUNT_ERR_BUSY */
+    int urc = vfs_unmount("/disk");
+    if (urc != MOUNT_ERR_BUSY) {
+        fd_close(proc, fd);
+        process_set_cwd(proc, orig_cwd);
+        vga_puts("FAIL (unmount succeeded while FD open)\n");
+        return -13;
+    }
+    fd_close(proc, fd);
+    /* CWD is still at /disk -> unmount MUST still fail with MOUNT_ERR_BUSY */
+    urc = vfs_unmount("/disk");
+    if (urc != MOUNT_ERR_BUSY) {
+        process_set_cwd(proc, orig_cwd);
+        vga_puts("FAIL (unmount succeeded while CWD in mount)\n");
+        return -13;
+    }
+    /* Reset CWD back to original */
+    process_set_cwd(proc, orig_cwd);
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 14/15] Clean unmount and re-mount persistence verification... ");
+    urc = vfs_unmount("/disk");
+    if (urc != MOUNT_OK) {
+        vga_puts("FAIL (clean unmount)\n");
+        return -14;
+    }
+    if (mount_find("/disk") != NULL) {
+        vga_puts("FAIL (mount still found)\n");
+        return -14;
+    }
+    /* Re-mount PFS on /disk */
+    mrc = vfs_mount("pfs", "ata0", "/disk");
+    if (mrc != MOUNT_OK) {
+        vga_puts("FAIL (re-mount)\n");
+        return -14;
+    }
+    /* Verify test12e.txt still exists with same content */
+    vfs_node_t *remount_file = NULL;
+    rc = vfs_lookup("/disk/test12e.txt", &remount_file);
+    if (rc != VFS_OK || remount_file == NULL) {
+        vga_puts("FAIL (file lost after remount)\n");
+        return -14;
+    }
+    kmemset(read_buf, 0, sizeof(read_buf));
+    rc = vfs_read(remount_file, read_buf, 0, plen, &br);
+    if (rc != VFS_OK || br != plen || kstrcmp(read_buf, payload) != 0) {
+        vga_puts("FAIL (content corrupted after remount)\n");
+        return -14;
+    }
+    vga_puts("PASS\n");
+
+    vga_puts("[TEST 15/15] Cleanup test artifacts via VFS unlink... ");
+    rc = vfs_unlink("/disk/dir12e/sub.txt");
+    if (rc != VFS_OK) {
+        vga_puts("FAIL (unlink sub.txt)\n");
+        return -15;
+    }
+    rc = vfs_unlink("/disk/test12e.txt");
+    if (rc != VFS_OK) {
+        vga_puts("FAIL (unlink test12e.txt)\n");
+        return -15;
+    }
+    /* Verify files no longer exist */
+    if (vfs_lookup("/disk/test12e.txt", &file_node) != VFS_ERR_NOT_FOUND) {
+        vga_puts("FAIL (test12e.txt still exists)\n");
+        return -15;
+    }
+
+    /* Verify unlink-while-open lifetime contract (Stage 11E compliant) */
+    vfs_node_t *open_node = NULL;
+    rc = vfs_create("/disk/open.txt", &open_node);
+    if (rc != VFS_OK || open_node == NULL) {
+        vga_puts("FAIL (create /disk/open.txt)\n");
+        return -15;
+    }
+    size_t obw = 0;
+    vfs_write(open_node, "opentest", 0, 8, &obw);
+    int ofd = fd_open(proc, "/disk/open.txt", O_RDWR);
+    if (ofd < 0) {
+        vga_puts("FAIL (fd_open /disk/open.txt)\n");
+        return -15;
+    }
+    rc = vfs_unlink("/disk/open.txt");
+    if (rc != VFS_OK) {
+        fd_close(proc, ofd);
+        vga_puts("FAIL (unlink /disk/open.txt)\n");
+        return -15;
+    }
+    char obuf[16];
+    kmemset(obuf, 0, sizeof(obuf));
+    int64_t onr = fd_read(proc, ofd, obuf, 8);
+    if (onr != 8 || kstrcmp(obuf, "opentest") != 0) {
+        fd_close(proc, ofd);
+        vga_puts("FAIL (read through unlinked open FD)\n");
+        return -15;
+    }
+    fd_close(proc, ofd);
+    vfs_node_t *chk_node = NULL;
+    if (vfs_lookup("/disk/open.txt", &chk_node) != VFS_ERR_NOT_FOUND) {
+        vga_puts("FAIL (open.txt still found after close)\n");
+        return -15;
     }
     vga_puts("PASS\n");
 

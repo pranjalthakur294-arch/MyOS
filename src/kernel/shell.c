@@ -1784,6 +1784,95 @@ static void builtin_mounttest(const char *args) {
 }
 
 /*
+ * Built-in Command: writefile
+ * Writes text content to a file via VFS / FD layer: writefile <path> <text>
+ */
+static void builtin_writefile(const char *args) {
+    while (*args == ' ' || *args == '\t') {
+        args++;
+    }
+    if (*args == '\0') {
+        vga_puts("Usage: writefile <path> <text>\n");
+        return;
+    }
+
+    char path[VFS_PATH_MAX];
+    const char *p = args;
+    size_t pi = 0;
+    while (*p != '\0' && *p != ' ' && *p != '\t' && pi + 1 < sizeof(path)) {
+        path[pi++] = *p++;
+    }
+    path[pi] = '\0';
+
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    const char *text = p;
+    size_t text_len = kstrlen(text);
+
+    process_t *proc = process_current();
+    if (!proc) {
+        proc = process_get(0);
+        if (!proc) {
+            vga_puts("writefile: error obtaining process context\n");
+            return;
+        }
+    }
+
+    vfs_node_t *cwd = (proc && proc->cwd) ? proc->cwd : vfs_get_root();
+    vfs_node_t *node = NULL;
+    int err = vfs_lookup_from(cwd, path, &node);
+    if (err != VFS_OK) {
+        /* If file does not exist, create it */
+        err = vfs_create_from(cwd, path, &node);
+        if (err != VFS_OK) {
+            vga_puts("writefile: cannot create file '");
+            vga_puts(path);
+            vga_puts("'\n");
+            return;
+        }
+    }
+
+    int fd = fd_open(proc, path, O_WRONLY);
+    if (fd < 0) {
+        vga_puts("writefile: cannot open '");
+        vga_puts(path);
+        vga_puts("'\n");
+        return;
+    }
+
+    if (text_len > 0) {
+        fd_write(proc, fd, text, text_len);
+    }
+    fd_close(proc, fd);
+
+    vga_puts("writefile: wrote ");
+    vga_print_dec((uint64_t)text_len);
+    vga_puts(" bytes to ");
+    vga_puts(path);
+    vga_putc('\n');
+}
+
+/*
+ * Built-in Command: vfs12etest
+ * Executes the in-kernel Stage 12E verification suite.
+ */
+static void builtin_vfs12etest(const char *args) {
+    (void)args;
+    vga_puts("Running Stage 12E VFS -> Persistent Filesystem verification suite...\n");
+    int rc = vfs12e_run_tests();
+    if (rc == MOUNT_OK) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("Stage 12E VFS integration suite passed!\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("Stage 12E VFS integration suite FAILED\n");
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
+}
+
+/*
  * Built-in Command: halt
  * Informs the user, disables hardware interrupts (cli), and halts the CPU.
  * Never returns.
@@ -1869,6 +1958,14 @@ void shell_execute(const char *cmd_line) {
     }
     if (kstrcmp(cmd, "mounttest") == 0) {
         builtin_mounttest(args);
+        return;
+    }
+    if (kstrcmp(cmd, "writefile") == 0) {
+        builtin_writefile(args);
+        return;
+    }
+    if (kstrcmp(cmd, "vfs12etest") == 0) {
+        builtin_vfs12etest(args);
         return;
     }
 

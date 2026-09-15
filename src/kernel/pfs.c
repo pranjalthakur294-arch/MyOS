@@ -351,6 +351,7 @@ int pfs_init(void) {
     s_pfs_dev = NULL;
     kmemset(&s_pfs_sb, 0, sizeof(pfs_superblock_t));
     kmemset(s_pfs_zero_buf, 0, PFS_SECTOR_SIZE);
+    pfs_reset_vnodes();
     return PFS_OK;
 }
 
@@ -612,6 +613,7 @@ int pfs_unmount(void) {
     pfs_sync_superblock();
     s_pfs_mounted = false;
     s_pfs_dev = NULL;
+    pfs_reset_vnodes();
     return PFS_OK;
 }
 
@@ -1012,6 +1014,496 @@ int pfs_write_file(uint32_t inode_num, uint32_t offset, const void *buffer, uint
 
     *bytes_written = done;
     return PFS_OK;
+}
+
+#define PFS_MAX_VNODES 32
+
+typedef struct {
+    bool active;
+    uint32_t ino;
+    bool unlinked;
+    vfs_node_t node;
+} pfs_vnode_entry_t;
+
+static pfs_vnode_entry_t s_pfs_vnodes[PFS_MAX_VNODES];
+
+void pfs_reset_vnodes(void) {
+    kmemset(s_pfs_vnodes, 0, sizeof(s_pfs_vnodes));
+}
+
+bool pfs_is_busy(void) {
+    for (size_t i = 0; i < PFS_MAX_VNODES; i++) {
+        if (s_pfs_vnodes[i].active && s_pfs_vnodes[i].node.ref_count > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * pfs_unlink - Removes a regular file from a directory.
+ * Frees all allocated data blocks and inode, and zeroes the directory entry slot.
+ * If the file is currently open (active VFS node with ref_count > 0), the directory
+ * entry is removed immediately but storage deallocation is deferred until release.
+ */
+int pfs_unlink(uint32_t parent_inode, const char *name) {
+    if (!s_pfs_mounted) {
+        return PFS_ERR_NOT_MOUNTED;
+    }
+    if (name == NULL || *name == '\0' || kstrlen(name) > PFS_NAME_MAX) {
+        return PFS_ERR_INVALID;
+    }
+
+    pfs_inode_t parent;
+    int rc = pfs_read_inode(parent_inode, &parent);
+    if (rc != PFS_OK) {
+        return rc;
+    }
+    if (parent.type != PFS_INODE_DIR) {
+        return PFS_ERR_NOT_DIR;
+    }
+
+    uint32_t entries_per_sec = PFS_SECTOR_SIZE / (uint32_t)sizeof(pfs_dirent_t);
+    int target_blk = -1;
+    int target_slot = -1;
+    uint32_t target_ino = 0;
+    uint8_t target_type = 0;
+
+    for (int b = 0; b < PFS_DIRECT_BLOCKS; b++) {
+        if (parent.direct[b] == PFS_NO_BLOCK) {
+            continue;
+        }
+        uint32_t phys_sec = s_pfs_sb.data_start + parent.direct[b];
+        rc = block_read(s_pfs_dev, phys_sec, s_pfs_dirent_buf);
+        if (rc != BLOCK_OK) {
+            return PFS_ERR_IO;
+        }
+
+        for (uint32_t j = 0; j < entries_per_sec; j++) {
+            pfs_dirent_t *de = (pfs_dirent_t *)(s_pfs_dirent_buf + j * sizeof(pfs_dirent_t));
+            if (de->inode == 0) {
+                continue;
+            }
+            if (kstrcmp(de->name, name) == 0) {
+                target_blk = b;
+                target_slot = (int)j;
+                target_ino = de->inode;
+                target_type = de->type;
+                break;
+            }
+        }
+        if (target_blk != -1) {
+            break;
+        }
+    }
+
+    if (target_blk == -1) {
+        return PFS_ERR_NOT_FOUND;
+    }
+
+    if (target_type == PFS_ENTRY_DIR) {
+        return PFS_ERR_IS_DIR;
+    }
+
+    /* Read target inode and verify it is a regular file */
+    pfs_inode_t target;
+    rc = pfs_read_inode(target_ino, &target);
+    if (rc != PFS_OK) {
+        return rc;
+    }
+    if (target.type == PFS_INODE_DIR) {
+        return PFS_ERR_IS_DIR;
+    }
+
+    /* Zero out directory entry in parent directory block on disk */
+    uint32_t phys_sec = s_pfs_sb.data_start + parent.direct[target_blk];
+    rc = block_read(s_pfs_dev, phys_sec, s_pfs_dirent_buf);
+    if (rc != BLOCK_OK) {
+        return PFS_ERR_IO;
+    }
+    pfs_dirent_t *de = (pfs_dirent_t *)(s_pfs_dirent_buf + target_slot * sizeof(pfs_dirent_t));
+    kmemset(de, 0, sizeof(pfs_dirent_t));
+    rc = block_write(s_pfs_dev, phys_sec, s_pfs_dirent_buf);
+    if (rc != BLOCK_OK) {
+        return PFS_ERR_IO;
+    }
+    pfs_sync_superblock();
+
+    /*
+     * Lifetime Contract (Stage 11E compliant):
+     * If the target file is currently referenced (ref_count > 0, e.g. open FD),
+     * defer block and inode deallocation until the last reference is released.
+     */
+    bool held_open = false;
+    for (size_t i = 0; i < PFS_MAX_VNODES; i++) {
+        if (s_pfs_vnodes[i].active && s_pfs_vnodes[i].ino == target_ino) {
+            if (s_pfs_vnodes[i].node.ref_count > 0) {
+                held_open = true;
+                s_pfs_vnodes[i].unlinked = true;
+            } else {
+                s_pfs_vnodes[i].active = false;
+                s_pfs_vnodes[i].unlinked = false;
+            }
+            break;
+        }
+    }
+
+    if (!held_open) {
+        pfs_free_inode(target_ino);
+    }
+
+    return PFS_OK;
+}
+
+/*
+ * pfs_readdir_entry - Reads the index-th active directory entry from a directory.
+ */
+int pfs_readdir_entry(uint32_t dir_inode, uint32_t index, char *out_name, uint8_t *out_type, uint32_t *out_size) {
+    if (!s_pfs_mounted) {
+        return PFS_ERR_NOT_MOUNTED;
+    }
+    if (out_name == NULL || out_type == NULL) {
+        return PFS_ERR_INVALID;
+    }
+
+    pfs_inode_t dir;
+    int rc = pfs_read_inode(dir_inode, &dir);
+    if (rc != PFS_OK) {
+        return rc;
+    }
+    if (dir.type != PFS_INODE_DIR) {
+        return PFS_ERR_NOT_DIR;
+    }
+
+    uint32_t entries_per_sec = PFS_SECTOR_SIZE / (uint32_t)sizeof(pfs_dirent_t);
+    uint32_t current_idx = 0;
+
+    for (int b = 0; b < PFS_DIRECT_BLOCKS; b++) {
+        if (dir.direct[b] == PFS_NO_BLOCK) {
+            continue;
+        }
+        uint32_t phys_sec = s_pfs_sb.data_start + dir.direct[b];
+        rc = block_read(s_pfs_dev, phys_sec, s_pfs_dirent_buf);
+        if (rc != BLOCK_OK) {
+            return PFS_ERR_IO;
+        }
+
+        for (uint32_t j = 0; j < entries_per_sec; j++) {
+            pfs_dirent_t *de = (pfs_dirent_t *)(s_pfs_dirent_buf + j * sizeof(pfs_dirent_t));
+            if (de->inode == 0) {
+                continue;
+            }
+            if (current_idx == index) {
+                kstrncpy(out_name, de->name, VFS_NAME_MAX);
+                *out_type = de->type;
+                if (out_size != NULL) {
+                    pfs_inode_t entry_ino;
+                    if (pfs_read_inode(de->inode, &entry_ino) == PFS_OK) {
+                        *out_size = entry_ino.size;
+                    } else {
+                        *out_size = 0;
+                    }
+                }
+                return PFS_OK;
+            }
+            current_idx++;
+        }
+    }
+
+    return PFS_ERR_NOT_FOUND; /* Indicates EOF */
+}
+
+static int pfs_vfs_read(vfs_node_t *node, void *buffer, uint64_t offset, size_t size, size_t *bytes_read);
+static int pfs_vfs_write(vfs_node_t *node, const void *buffer, uint64_t offset, size_t size, size_t *bytes_written);
+static int pfs_vfs_lookup(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
+static int pfs_vfs_create(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
+static int pfs_vfs_mkdir(vfs_node_t *dir, const char *name, vfs_node_t **out_node);
+static int pfs_vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent);
+static int pfs_vfs_unlink(vfs_node_t *dir, const char *name);
+static void pfs_vfs_release(vfs_node_t *node);
+
+static vfs_node_ops_t s_pfs_node_ops = {
+    .read    = pfs_vfs_read,
+    .write   = pfs_vfs_write,
+    .lookup  = pfs_vfs_lookup,
+    .create  = pfs_vfs_create,
+    .mkdir   = pfs_vfs_mkdir,
+    .readdir = pfs_vfs_readdir,
+    .unlink  = pfs_vfs_unlink,
+    .release = pfs_vfs_release
+};
+
+vfs_node_ops_t *pfs_get_vfs_ops(void) {
+    return &s_pfs_node_ops;
+}
+
+vfs_node_t *pfs_vnode_get(uint32_t ino, const char *name, uint16_t type, vfs_node_t *parent) {
+    if (ino == 0) {
+        return NULL;
+    }
+
+    /* 1. Check if already present in pool */
+    for (size_t i = 0; i < PFS_MAX_VNODES; i++) {
+        if (s_pfs_vnodes[i].active && s_pfs_vnodes[i].ino == ino) {
+            if (parent != NULL) {
+                s_pfs_vnodes[i].node.parent = parent;
+            }
+            if (name != NULL && *name != '\0') {
+                kstrncpy(s_pfs_vnodes[i].node.name, name, VFS_NAME_MAX);
+            }
+            return &s_pfs_vnodes[i].node;
+        }
+    }
+
+    /* 2. Find empty slot in pool */
+    size_t free_slot = PFS_MAX_VNODES;
+    for (size_t i = 0; i < PFS_MAX_VNODES; i++) {
+        if (!s_pfs_vnodes[i].active) {
+            free_slot = i;
+            break;
+        }
+    }
+
+    /* 3. If full, reuse an unreferenced slot */
+    if (free_slot == PFS_MAX_VNODES) {
+        for (size_t i = 0; i < PFS_MAX_VNODES; i++) {
+            if (s_pfs_vnodes[i].node.ref_count == 0) {
+                free_slot = i;
+                break;
+            }
+        }
+    }
+
+    if (free_slot == PFS_MAX_VNODES) {
+        return NULL;
+    }
+
+    pfs_vnode_entry_t *entry = &s_pfs_vnodes[free_slot];
+    entry->active = true;
+    entry->ino = ino;
+
+    vfs_node_t *node = &entry->node;
+    kmemset(node, 0, sizeof(vfs_node_t));
+    if (name != NULL) {
+        kstrncpy(node->name, name, VFS_NAME_MAX);
+    }
+    node->type = (type == PFS_INODE_DIR || type == PFS_ENTRY_DIR) ? VFS_NODE_DIRECTORY : VFS_NODE_FILE;
+    node->permissions = 0644;
+    node->ref_count = 0;
+    node->parent = parent;
+    node->ops = &s_pfs_node_ops;
+    node->internal_data = (void *)(uintptr_t)ino;
+
+    pfs_inode_t ino_obj;
+    if (pfs_read_inode(ino, &ino_obj) == PFS_OK) {
+        node->size = (node->type == VFS_NODE_DIRECTORY) ? PFS_SECTOR_SIZE : ino_obj.size;
+    } else {
+        node->size = (node->type == VFS_NODE_DIRECTORY) ? PFS_SECTOR_SIZE : 0;
+    }
+
+    return node;
+}
+
+static int pfs_vfs_read(vfs_node_t *node, void *buffer, uint64_t offset, size_t size, size_t *bytes_read) {
+    if (node == NULL || buffer == NULL || bytes_read == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (node->type != VFS_NODE_FILE) {
+        return VFS_ERR_IS_DIR;
+    }
+    if (offset > 0xFFFFFFFFULL || size > 0xFFFFFFFFULL) {
+        return VFS_ERR_INVALID;
+    }
+
+    uint32_t ino = (uint32_t)(uintptr_t)node->internal_data;
+    uint32_t read_bytes = 0;
+    int rc = pfs_read_file(ino, (uint32_t)offset, buffer, (uint32_t)size, &read_bytes);
+    if (rc != PFS_OK) {
+        if (rc == PFS_ERR_IS_DIR) return VFS_ERR_IS_DIR;
+        if (rc == PFS_ERR_INVALID) return VFS_ERR_INVALID;
+        return VFS_ERR_IO;
+    }
+
+    *bytes_read = read_bytes;
+    return VFS_OK;
+}
+
+static int pfs_vfs_write(vfs_node_t *node, const void *buffer, uint64_t offset, size_t size, size_t *bytes_written) {
+    if (node == NULL || buffer == NULL || bytes_written == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (node->type != VFS_NODE_FILE) {
+        return VFS_ERR_IS_DIR;
+    }
+    if (offset > 0xFFFFFFFFULL || size > 0xFFFFFFFFULL) {
+        return VFS_ERR_INVALID;
+    }
+
+    uint32_t ino = (uint32_t)(uintptr_t)node->internal_data;
+    uint32_t written_bytes = 0;
+    int rc = pfs_write_file(ino, (uint32_t)offset, buffer, (uint32_t)size, &written_bytes);
+    if (rc != PFS_OK) {
+        if (rc == PFS_ERR_IS_DIR) return VFS_ERR_IS_DIR;
+        if (rc == PFS_ERR_RANGE) return VFS_ERR_NOT_SUPPORTED;
+        if (rc == PFS_ERR_NOSPACE) return VFS_ERR_NO_MEM;
+        if (rc == PFS_ERR_INVALID) return VFS_ERR_INVALID;
+        return VFS_ERR_IO;
+    }
+
+    if (offset + written_bytes > node->size) {
+        node->size = offset + written_bytes;
+    }
+    *bytes_written = written_bytes;
+    return VFS_OK;
+}
+
+static int pfs_vfs_lookup(vfs_node_t *dir, const char *name, vfs_node_t **out_node) {
+    if (dir == NULL || name == NULL || out_node == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+
+    uint32_t parent_ino = (uint32_t)(uintptr_t)dir->internal_data;
+    uint32_t child_ino = 0;
+    uint8_t child_type = 0;
+    int rc = pfs_lookup(parent_ino, name, &child_ino, &child_type);
+    if (rc != PFS_OK) {
+        if (rc == PFS_ERR_NOT_FOUND) return VFS_ERR_NOT_FOUND;
+        if (rc == PFS_ERR_NOT_DIR) return VFS_ERR_NOT_DIR;
+        return VFS_ERR_IO;
+    }
+
+    vfs_node_t *vn = pfs_vnode_get(child_ino, name, child_type, dir);
+    if (vn == NULL) {
+        return VFS_ERR_NO_MEM;
+    }
+
+    *out_node = vn;
+    return VFS_OK;
+}
+
+static int pfs_vfs_create(vfs_node_t *dir, const char *name, vfs_node_t **out_node) {
+    if (dir == NULL || name == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+
+    uint32_t parent_ino = (uint32_t)(uintptr_t)dir->internal_data;
+    uint32_t new_ino = 0;
+    int rc = pfs_create_file(parent_ino, name, &new_ino);
+    if (rc != PFS_OK) {
+        if (rc == PFS_ERR_EXIST) return VFS_ERR_EXISTS;
+        if (rc == PFS_ERR_NOSPACE) return VFS_ERR_NO_MEM;
+        if (rc == PFS_ERR_INVALID) return VFS_ERR_INVALID;
+        return VFS_ERR_IO;
+    }
+
+    vfs_node_t *vn = pfs_vnode_get(new_ino, name, PFS_INODE_FILE, dir);
+    if (vn == NULL) {
+        return VFS_ERR_NO_MEM;
+    }
+
+    if (out_node != NULL) {
+        *out_node = vn;
+    }
+    return VFS_OK;
+}
+
+static int pfs_vfs_mkdir(vfs_node_t *dir, const char *name, vfs_node_t **out_node) {
+    if (dir == NULL || name == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+
+    uint32_t parent_ino = (uint32_t)(uintptr_t)dir->internal_data;
+    uint32_t new_ino = 0;
+    int rc = pfs_create_directory(parent_ino, name, &new_ino);
+    if (rc != PFS_OK) {
+        if (rc == PFS_ERR_EXIST) return VFS_ERR_EXISTS;
+        if (rc == PFS_ERR_NOSPACE) return VFS_ERR_NO_MEM;
+        if (rc == PFS_ERR_INVALID) return VFS_ERR_INVALID;
+        return VFS_ERR_IO;
+    }
+
+    vfs_node_t *vn = pfs_vnode_get(new_ino, name, PFS_INODE_DIR, dir);
+    if (vn == NULL) {
+        return VFS_ERR_NO_MEM;
+    }
+
+    if (out_node != NULL) {
+        *out_node = vn;
+    }
+    return VFS_OK;
+}
+
+static int pfs_vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *dirent) {
+    if (dir == NULL || dirent == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+    if (index > 0xFFFFFFFFULL) {
+        return VFS_EOF;
+    }
+
+    uint32_t dir_ino = (uint32_t)(uintptr_t)dir->internal_data;
+    char name_buf[VFS_NAME_MAX];
+    uint8_t type = 0;
+    uint32_t size = 0;
+    int rc = pfs_readdir_entry(dir_ino, (uint32_t)index, name_buf, &type, &size);
+    if (rc != PFS_OK) {
+        return VFS_EOF;
+    }
+
+    kstrncpy(dirent->name, name_buf, VFS_NAME_MAX);
+    dirent->type = (type == PFS_ENTRY_DIR) ? VFS_NODE_DIRECTORY : VFS_NODE_FILE;
+    dirent->size = size;
+    return VFS_OK;
+}
+
+static int pfs_vfs_unlink(vfs_node_t *dir, const char *name) {
+    if (dir == NULL || name == NULL) {
+        return VFS_ERR_INVALID;
+    }
+    if (dir->type != VFS_NODE_DIRECTORY) {
+        return VFS_ERR_NOT_DIR;
+    }
+
+    uint32_t dir_ino = (uint32_t)(uintptr_t)dir->internal_data;
+    int rc = pfs_unlink(dir_ino, name);
+    if (rc != PFS_OK) {
+        if (rc == PFS_ERR_NOT_FOUND) return VFS_ERR_NOT_FOUND;
+        if (rc == PFS_ERR_IS_DIR) return VFS_ERR_IS_DIR;
+        return VFS_ERR_IO;
+    }
+    return VFS_OK;
+}
+
+static void pfs_vfs_release(vfs_node_t *node) {
+    if (node == NULL) {
+        return;
+    }
+    uint32_t ino = (uint32_t)(uintptr_t)node->internal_data;
+    for (size_t i = 0; i < PFS_MAX_VNODES; i++) {
+        if (s_pfs_vnodes[i].active && s_pfs_vnodes[i].ino == ino) {
+            if (s_pfs_vnodes[i].node.ref_count == 0) {
+                if (s_pfs_vnodes[i].unlinked) {
+                    /* Deferred destruction: free data blocks and inode on disk */
+                    pfs_free_inode(ino);
+                    s_pfs_vnodes[i].unlinked = false;
+                }
+                s_pfs_vnodes[i].active = false;
+            }
+            break;
+        }
+    }
 }
 
 /*

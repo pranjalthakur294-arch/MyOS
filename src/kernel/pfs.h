@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "block.h"
+#include "vfs.h"
 
 /* Filesystem Signature & Version */
 #define PFS_MAGIC               0x50465331  /* 'PFS1' */
@@ -116,6 +117,14 @@ int pfs_create_file(uint32_t parent_inode, const char *name, uint32_t *out_inode
 int pfs_create_directory(uint32_t parent_inode, const char *name, uint32_t *out_inode);
 int pfs_read_file(uint32_t inode_num, uint32_t offset, void *buffer, uint32_t length, uint32_t *bytes_read);
 int pfs_write_file(uint32_t inode_num, uint32_t offset, const void *buffer, uint32_t length, uint32_t *bytes_written);
+int pfs_unlink(uint32_t parent_inode, const char *name);
+int pfs_readdir_entry(uint32_t dir_inode, uint32_t index, char *out_name, uint8_t *out_type, uint32_t *out_size);
+
+/* VFS Adapter & Node Operations */
+vfs_node_ops_t *pfs_get_vfs_ops(void);
+vfs_node_t *pfs_vnode_get(uint32_t ino, const char *name, uint16_t type, vfs_node_t *parent);
+bool pfs_is_busy(void);
+void pfs_reset_vnodes(void);
 
 /* In-Kernel Verification Suite */
 int pfs_run_tests(void);
