@@ -12,7 +12,7 @@
  * PID 0 is reserved for the kernel process context.
  * PIDs 1..MAX_PROCESSES-1 are user processes.
  */
-#define MAX_PROCESSES 4
+#define MAX_PROCESSES 8
 #define PROCESS_NAME_MAX 32
 
 /*
@@ -41,6 +41,7 @@ typedef enum {
  */
 typedef struct process {
     uint32_t pid;                           /* Process Identifier */
+    uint32_t ppid;                          /* Parent Process Identifier (Stage 13B placeholder) */
     process_state_t state;                  /* Current lifecycle state */
     process_type_t type;                    /* Kernel or User process */
     char name[PROCESS_NAME_MAX];            /* Human-readable process name */

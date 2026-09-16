@@ -456,6 +456,36 @@
     - Dedicated `test_stage12e.py`: 15 automated test cases passing 100%.
     - Full regression suites (Stages 12A, 12B, 12C, 12D, 12E) passing 100% with 0 warnings.
 
+- **Stage 13A: Process Creation + Executable Launch**
+  - Complete End-to-End User Process Launch Pipeline:
+    - Combines the ELF64 loader, virtual filesystem (VFS/PFS), isolated address-space manager (CR3), and timer-driven preemptive scheduler into a cohesive execution workflow.
+    - Executable paths are treated strictly as data, dynamically resolved through the VFS mount resolution boundary (`/disk/...` on PFS or `/bin/...` on RAMFS).
+  - Robust Process Creation Pipeline (`process_create_from_elf_path`):
+    - `process.h` aligned: expanded `MAX_PROCESSES` from 4 to 8 (matching `MAX_TASKS = 8`), and added `ppid` field to `struct process`.
+    - Pre-checks process table capacity, returning `ELF_ERR_PROC_LIMIT` (-31) if all slots are full.
+    - Resolves executable vnode and reads image via generic VFS/FD abstraction.
+    - Allocates private PML4 directory via `vmm_create_process_pml4()`.
+    - Inherits caller process attributes cleanly: sets `proc->ppid` to caller PID (or 0 for kernel caller) and clones caller CWD with `vfs_node_ref()`.
+    - Verifies ELF64 headers and maps `PT_LOAD` segments at user virtual addresses (`0x60000000`, `0x60001000`) with appropriate page protections (`PTE_USER`, W^X separation).
+    - Allocates private 4 KiB user stack at `0x70000000` (stack top `0x70001000`) and dedicated kernel interrupt stack (`user_kernel_stack`).
+    - Transactional rollback on failure: on any loading, memory mapping, or validation error, all allocated physical frames and page tables are unmapped, freed, and the process slot is reset with zero memory or descriptor leaks.
+    - Closes temporary file descriptor and frees kernel image buffer immediately after segment mapping.
+  - Interactive Shell Execution & Lifecycle (`shell.c`):
+    - Re-architected built-in `run <path>`:
+      - Validates arguments using `parse_single_path_arg` (`Usage: run <path>`, `run: too many arguments`).
+      - Spawns target executable as an independent Ring 3 process, printing `started process <PID>`.
+      - Provides transparent fallback to `/disk/<path>` for executables stored on persistent storage.
+      - Enables interrupts (`sti`), yields CPU while waiting for process termination, and performs clean deferred reaping (`process_reap_terminated()`).
+      - Provides clear diagnostic errors for nonexistent binaries, directories, process table exhaustion, and corrupted ELFs.
+  - Persistent User Binary (`user/hello.c`):
+    - Freestanding user program compiled for Ring 3: verifies `CPL == 3`, validates private `.data` and `.bss` storage, invokes `SYS_GETTIME`, executes `SYS_WRITE` to print `"  [ELF Ring 3] Hello from persistent ELF executable!\n"`, and exits with code 42 via `SYS_EXIT`.
+    - Linked with custom `-N` (OMAGIC) linker script (`user/linker.ld`), yielding a compact ~1.2 KiB ELF conforming to PFS direct block boundaries (4096 bytes).
+    - Pre-populated onto persistent disk image (`build/disk.img`) at `/bin/hello` and `/hello` via `tools/pfs_populate.py`.
+  - Automated Verification & Screen Budget:
+    - 20/20 automated tests passing in `test_stage13a.py`.
+    - Shell `help` and boot display budget strictly preserved within 24 rows.
+    - Zero memory leaks, zero frame leaks, zero FD leaks, and complete post-termination cleanup.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -536,7 +566,12 @@ MyOS/
 ├── test_stage12b.py             # Stage 12B automated test suite
 ├── test_stage12c.py             # Stage 12C automated test suite
 ├── test_stage12d.py             # Stage 12D automated test suite
+├── test_stage12e.py             # Stage 12E automated test suite
+├── test_stage13a.py             # Stage 13A automated test suite
+├── tools/
+│   └── pfs_populate.py          # Offline PFS population tool for disk images
 ├── user/
+│   ├── hello.c                  # Ring 3 persistent user ELF executable (Stage 13A)
 │   ├── linker.ld                # User ELF linker script (PT_LOAD segments at 0x60000000)
 │   ├── start.S                  # User entry point (_start) with int 0x80 SYS_EXIT
 │   └── test_program.c           # Ring 3 user test program (CPL 3, BSS/data, syscalls)
@@ -629,5 +664,5 @@ make run
 
 ### Run Automated Tests:
 ```bash
-python3 test_stage12d.py
+python3 test_stage13a.py
 ```

@@ -158,6 +158,7 @@ typedef struct {
 #define ELF_ERR_OPEN_FAILED               -28
 #define ELF_ERR_READ_FAILED               -29
 #define ELF_ERR_FILE_TOO_LARGE            -30
+#define ELF_ERR_PROC_LIMIT                -31
 #define ELF_ERR_NOT_FOUND                 -40
 #define ELF_ERR_IS_DIR                    -41
 
@@ -176,9 +177,10 @@ int elf_load_into_process(struct process *proc, const void *image, size_t size, 
 struct process *process_create_from_elf(const void *image, size_t size, const char *name);
 
 /*
- * Filesystem-Backed Execution APIs (Stage 11C)
+ * Filesystem-Backed Execution APIs (Stage 11C & Stage 13A)
  */
 int process_exec_path(const char *path, const char *name, struct process **out_proc);
+int process_create_from_elf_path(const char *path, const char *name, struct process **out_proc);
 int elf_exec_path(const char *path, const char *name, struct process **out_proc);
 
 /*

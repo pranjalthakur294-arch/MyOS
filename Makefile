@@ -57,11 +57,15 @@ C_OBJS   := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(C_SRCS))
 ASM_OBJS := $(patsubst $(SRC_DIR)/%.S, $(BUILD_DIR)/%.o, $(ASM_SRCS))
 OBJS     := $(ASM_OBJS) $(C_OBJS)
 
-# User-space ELF Test Program
-USER_DIR     := user
-USER_BIN     := $(BUILD_DIR)/user/test_program.elf
-USER_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/test_program.o
-USER_LDFLAGS := -nostdlib -z max-page-size=0x1000 -T $(USER_DIR)/linker.ld
+# User-space ELF Test Programs
+USER_DIR           := user
+USER_BIN           := $(BUILD_DIR)/user/test_program.elf
+USER_OBJS          := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/test_program.o
+USER_LDFLAGS       := -nostdlib -z max-page-size=0x1000 -T $(USER_DIR)/linker.ld
+
+USER_HELLO_BIN     := $(BUILD_DIR)/user/hello.elf
+USER_HELLO_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/hello.o
+USER_HELLO_LDFLAGS := -nostdlib -N -T $(USER_DIR)/linker.ld
 
 # Raw Test Disk Image (32 MiB)
 DISK_IMG     := $(BUILD_DIR)/disk.img
@@ -71,7 +75,7 @@ DISK_IMG     := $(BUILD_DIR)/disk.img
 # ------------------------------------------------------------------------------
 .PHONY: all clean run run-iso iso check-env help
 
-all: $(KERNEL_BIN) $(DISK_IMG)
+all: $(KERNEL_BIN) $(DISK_IMG) $(USER_HELLO_BIN)
 
 # Compile User-Space ELF Objects
 $(BUILD_DIR)/user/%.o: $(USER_DIR)/%.S
@@ -87,6 +91,12 @@ $(USER_BIN): $(USER_OBJS) $(USER_DIR)/linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_OBJS)
 	@echo "[SUCCESS] User ELF binary created at $@"
+
+$(USER_HELLO_BIN): $(USER_HELLO_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_HELLO_OBJS)
+	@echo "[SUCCESS] User hello ELF binary created at $@"
+
 
 # Ensure embedded ELF assembly depends on the compiled user binary
 $(BUILD_DIR)/kernel/elf_image.o: $(SRC_DIR)/kernel/elf_image.S $(USER_BIN)
@@ -122,10 +132,11 @@ $(KERNEL_ISO): $(KERNEL_BIN) grub.cfg
 	    -o $(KERNEL_ISO) $(ISO_DIR)
 	@echo "[SUCCESS] Bootable ISO created at $@"
 
-# Create a 32 MiB raw zero-filled test disk image
-$(DISK_IMG):
+# Create a 32 MiB raw test disk image populated with PFS and user executables
+$(DISK_IMG): $(USER_HELLO_BIN) tools/pfs_populate.py
 	@mkdir -p $(BUILD_DIR)
 	@dd if=/dev/zero of=$@ bs=1M count=32 status=none
+	@python3 tools/pfs_populate.py
 
 # Run directly in QEMU via direct kernel boot (-kernel)
 run: $(KERNEL_BIN) $(DISK_IMG)

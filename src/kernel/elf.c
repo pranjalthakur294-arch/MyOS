@@ -122,6 +122,8 @@ const char *elf_strerror(int err) {
             return "Failed to read executable file";
         case ELF_ERR_FILE_TOO_LARGE:
             return "Executable exceeds maximum supported size";
+        case ELF_ERR_PROC_LIMIT:
+            return "Process slot table exhausted";
         case ELF_ERR_NOT_FOUND:
             return "File not found";
         case ELF_ERR_IS_DIR:
@@ -516,6 +518,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
 
     int ret = vmm_create_process_pml4(&pml4_phys, tables, &table_count, MAX_PROCESS_TABLE_FRAMES);
     if (ret != 0) {
+        kmemset(proc, 0, sizeof(process_t));
         return NULL;
     }
 
@@ -558,7 +561,11 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     }
 
     /* 6. Populate PCB fields */
+    process_t *caller = process_current();
+    if (!caller) caller = process_get(0);
+
     proc->pid = (uint32_t)slot;
+    proc->ppid = caller ? caller->pid : 0;
     proc->state = PROCESS_READY;
     proc->type = PROCESS_TYPE_USER;
     kstrncpy(proc->name, name ? name : "elf_proc", PROCESS_NAME_MAX);
@@ -569,7 +576,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     proc->exit_status = 0;
     proc->reaped = false;
     proc->is_elf = true;
-    proc->cwd = vfs_get_root();
+    proc->cwd = (caller && caller->cwd) ? caller->cwd : vfs_get_root();
     vfs_node_ref(proc->cwd);
 
     return proc;
@@ -673,7 +680,21 @@ int process_exec_path(const char *path, const char *name, struct process **out_p
         return val;
     }
 
-    /* 6. Create process with private CR3 and mapped PT_LOAD segments */
+    /* 6. Check process slot availability prior to allocation */
+    int slot = -1;
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        process_t *p = process_get((uint32_t)i);
+        if (p && (p->state == PROCESS_UNUSED || (p->state == PROCESS_TERMINATED && p->reaped))) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        kfree(buf);
+        return ELF_ERR_PROC_LIMIT;
+    }
+
+    /* Create process with private CR3 and mapped PT_LOAD segments */
     process_t *proc = process_create_from_elf(buf, sz, name ? name : path);
 
     /* 7. Free temporary ELF buffer immediately after segment mapping */
@@ -687,6 +708,10 @@ int process_exec_path(const char *path, const char *name, struct process **out_p
         *out_proc = proc;
     }
     return 0;
+}
+
+int process_create_from_elf_path(const char *path, const char *name, struct process **out_proc) {
+    return process_exec_path(path, name, out_proc);
 }
 
 int elf_exec_path(const char *path, const char *name, struct process **out_proc) {

@@ -1,108 +1,159 @@
-# Stage 12E Walkthrough: VFS -> Persistent Filesystem Integration
+# Stage 13A Walkthrough: Process Creation + Executable Launch
 
 ## 1. Executive Summary
 
-Stage 12E elevates the filesystem mounting subsystem into an active VFS path-resolution boundary. Prior to this stage, the mount table maintained registration records, but VFS path traversal was unaware of mount points. With Stage 12E, the operating system achieves complete, transparent integration across all storage layers:
+Stage 13A unites the ELF64 loader, virtual filesystem (VFS/RAMFS/PFS), address-space isolation (CR3), and timer-driven preemptive scheduler into an end-to-end user process launch pipeline. Users and the shell can now launch standalone 64-bit ELF executables residing on persistent disk storage (PFS) or in-memory storage (RAMFS). Executables run as isolated Ring 3 processes with dedicated page tables, user stacks, and kernel interrupt stacks, executing system calls and terminating cleanly with zero memory leaks.
 
 ```text
-User / Shell / Tasks
-         |
-    VFS Layer (vfs.h, vfs.c)
-         |
-  Mount Resolution Boundary
-   |                     |
-   v                     v
-RAMFS ("/")         PFS ("/disk")
-                         |
-                Block Device API (block.h)
-                         |
-                ATA Adapter (ata.c)
-                         |
-                ATA PIO Driver
-                         |
-                QEMU Disk (disk.img)
+========================================================================================
+                          STAGE 13A PROCESS LAUNCH ARCHITECTURE
+========================================================================================
+
+                                  Shell / User Command
+                                    [ run <path> ]
+                                          |
+                                          v
+                              VFS Mount Resolution Layer
+                                   /             \
+                                  v               v
+                             RAMFS ("/")    PFS ("/disk")
+                                                  |
+                                            Block Device API
+                                                  |
+                                            ATA PIO Driver
+                                                  |
+                                           QEMU Disk (disk.img)
+                                          |
+                                          v
+                             Read ELF into Temporary Buffer
+                                          |
+                                          v
+                              Validate ELF64 Headers
+                                (Magic, Machine, Flags)
+                                          |
+                                          v
+                            Allocate Process Table Slot
+                             (Check MAX_PROCESSES limit)
+                                          |
+                                          v
+                             Create Private User PML4
+                               (Clone Lower 1 GiB)
+                                          |
+                                          v
+                             Inherit Caller Attributes
+                               (PPID, Refcounted CWD)
+                                          |
+                                          v
+                           Map PT_LOAD Segments into PML4
+                             (W^X Permissions: RX / RW)
+                                          |
+                                          v
+                            Allocate User Stack (0x70000000)
+                           & Dedicated TSS Kernel RSP0 Stack
+                                          |
+                                          v
+                          Free Temporary ELF Kernel Buffer
+                                          |
+                                          v
+                            Configure Task IRETQ Frame
+                         (CS=0x23, SS=0x1B, RIP=e_entry)
+                                          |
+                                          v
+                           Timer Interrupt / Scheduler Tick
+                                          |
+                                          v
+                           IRETQ Transition to Ring 3 (CPL 3)
+                                          |
+                                          v
+                             User Execution & Syscalls
+                            (SYS_WRITE, SYS_GETTIME, ...)
+                                          |
+                                          v
+                                SYS_EXIT(status = 42)
+                                          |
+                                          v
+                             Deferred Process Reaper
+                         (Free PML4, Frames, Stacks, Slots)
+========================================================================================
 ```
 
-Key Accomplishments:
-1. **Generic Mount Boundary Traversal**:
-   - `vfs_lookup_from` resolves path components dynamically across mounts without any hardcoded paths.
-   - Forward crossing: resolving a component matching an active mountpoint directory crosses directly into the mounted filesystem instance's root vnode.
-   - Reverse `..` crossing: resolving `..` from a mounted filesystem root ascends back out to the parent directory of the host mountpoint, while root `..` at `/` remains strictly clamped at `/`.
-   - Canonical path reconstruction: `vfs_get_path` ascends through mount roots back into host mountpoint nodes, accurately reconstructing `/disk` and subdirectories (`/disk/subdir`).
-2. **Distinct Mount Root Semantics**:
-   - Host mountpoint vnodes (in RAMFS) and mounted root vnodes (in PFS) remain separate, distinct objects in memory.
-   - The mount entry maintains an active reference (`vfs_node_ref`) to the host mountpoint node throughout the mount lifecycle.
-3. **PFS VFS Adapter**:
-   - Implemented a complete `vfs_node_ops_t` table for PFS: `read`, `write`, `lookup`, `create`, `mkdir`, `readdir`, `unlink`, and `release`.
-   - Bounded static vnode pool (`s_pfs_vnodes[32]`) in `.bss`; zero dynamic allocations during boot or unreferenced caching.
-   - On-disk file unlinking (`pfs_unlink`): reclaims data blocks, frees inode in bitmap, zeroes directory entry on disk, and synchronizes superblock.
-   - Directory entry iteration (`pfs_readdir_entry`): extracts entry name, type, and size by index.
-4. **CWD & File Descriptor Compatibility**:
-   - Processes can set CWD inside mounted filesystems (`cd /disk`, `pwd` reports `/disk`).
-   - Relative paths resolve from CWD within PFS (`cat msg.txt`, `touch file.txt`).
-   - File descriptors (`fd_open`, `fd_read`, `fd_write`, `fd_close`) operate transparently on PFS files through VFS.
-5. **Busy Unmount Protection & Lifetime Safety**:
-   - `mount_check_busy()` rejects unmount with `MOUNT_ERR_BUSY` if root `ref_count > 1` (e.g., process CWD inside mount) or if any child vnodes are actively held (e.g., open file descriptors).
-   - Releasing all descriptors and navigating CWD out of the mountpoint enables clean unmount and subsequent remount.
-6. **Cross-Boot Persistence**:
-   - Verified real multi-session persistence across separate QEMU boot instances.
+---
+
+## 2. Key Architectural Implementations
+
+### 1. Process Table Alignment & Lineage Tracking (`src/kernel/process.h`)
+- Increased `MAX_PROCESSES` from 4 to 8, matching `MAX_TASKS = 8` and enabling concurrent process execution.
+- Added `uint32_t ppid;` to `struct process` to record parent process lineage upon creation (`caller ? caller->pid : 0`).
+
+### 2. Robust Process Creation Pipeline (`src/kernel/elf.c`, `src/kernel/elf.h`)
+- Added `ELF_ERR_PROC_LIMIT` (-31) and implemented process table capacity pre-checks before opening or loading binaries.
+- Implemented `process_create_from_elf_path(const char *path, const char *name, struct process **out_proc)`:
+  - Resolves executable vnode and reads image dynamically via generic VFS/FD abstraction.
+  - Dynamically creates private PML4 page directory (`vmm_create_process_pml4()`) with zero heap overhead.
+  - Inherits caller's CWD atomically with `vfs_node_ref(proc->cwd)` (released upon process reaping).
+  - Validates and maps `PT_LOAD` segments into user address space (`0x60000000`, `0x60001000`) with strict W^X enforcement.
+  - Allocates 4 KiB user stack at `0x70000000` (stack top `0x70001000`) and private kernel interrupt stack in `.bss`.
+  - Transactional rollback: any failure during header verification, memory allocation, or segment mapping triggers complete rollback (unmapping user pages, freeing allocated frames, restoring caller CR3, clearing process slot).
+  - Deallocates temporary ELF buffer immediately after segment mapping is complete.
+
+### 3. Shell Command Architecture & Lifecycle (`src/kernel/shell.c`)
+- Re-architected built-in `run <path>`:
+  - Enforces strict argument validation using `parse_single_path_arg`: rejects missing arguments (`Usage: run <path>`) and excess arguments (`run: too many arguments`).
+  - Implements dynamic VFS path resolution with transparent fallback to `/disk/<path>` when persistent binaries are referenced.
+  - Emits launch notification: `started process <PID>`.
+  - Enables interrupts (`sti`), yields CPU in a bounded wait loop until `proc->state == PROCESS_TERMINATED`, and immediately calls `process_reap_terminated()`.
+  - Provides descriptive diagnostics for nonexistent files, directories, process limits, and corrupt binaries.
+
+### 4. Persistent Ring 3 Executable (`user/hello.c`) & Offline Disk Tooling (`tools/pfs_populate.py`)
+- Created freestanding Ring 3 user program `user/hello.c`:
+  - Validates `CPL == 3` via `%cs`.
+  - Validates private writable `.data` and `.bss` memory.
+  - Invokes `SYS_GETTIME` to measure kernel uptime ticks.
+  - Invokes `SYS_WRITE` to print `  [ELF Ring 3] Hello from persistent ELF executable!\n`.
+  - Terminates cleanly with exit status 42 via `SYS_EXIT`.
+- Custom linker configuration (`user/linker.ld` with `-N` OMAGIC): produces a 1,272-byte ELF binary fitting comfortably within PFS direct block limits (4,096 bytes).
+- Offline tool `tools/pfs_populate.py`: formats and populates `build/disk.img` with a valid PFS filesystem containing `/bin/hello` and `/hello`.
 
 ---
 
-## 2. In-Kernel Verification Suite (`vfs12etest`)
+## 3. Automated Test Matrix (`test_stage13a.py`)
 
-The `vfs12etest` shell command executes a 15-assertion in-kernel verification suite:
+All 20 automated test cases pass 100%:
 
-| Check # | Description | Expected Result | Verified |
+| Test # | Description | Result | Details |
 |---|---|---|---|
-| 1 | Mountpoint path resolution to PFS root | `vfs_lookup("/disk") == disk_mnt->instance->root` | PASS |
-| 2 | Distinct mount root semantics | Mountpoint node != Mounted root node; Inode == 1 | PASS |
-| 3 | Create file via VFS in mounted PFS | `vfs_create("/disk/test12e.txt") == VFS_OK` | PASS |
-| 4 | Write & read file via VFS ops | 32-byte payload roundtrip byte-for-byte | PASS |
-| 5 | Create directory via VFS in mounted PFS | `vfs_mkdir("/disk/dir12e") == VFS_OK` | PASS |
-| 6 | Create & read file inside subdirectory | `vfs_create("/disk/dir12e/sub.txt")` and read roundtrip | PASS |
-| 7 | Directory iteration via `vfs_readdir` | Finds `test12e.txt` (file) and `dir12e` (dir) | PASS |
-| 8 | Cross-boundary `..` traversal | `vfs_lookup("/disk/..") == vfs_root` & `../readme.txt` | PASS |
-| 9 | Root `..` clamping | `vfs_lookup("/..") == vfs_root` | PASS |
-| 10 | Canonical path reconstruction | `vfs_get_path` -> `"/disk"`, `"/disk/dir12e"` | PASS |
-| 11 | CWD relative resolution in mount | CWD at `/disk` resolves `test12e.txt` & `../readme.txt` | PASS |
-| 12 | FD open/write/read/close on PFS file | `fd_open("/disk/test12e.txt", O_RDWR)` -> `fd_read` | PASS |
-| 13 | Busy unmount rejection | Rejected with `MOUNT_ERR_BUSY` while FD open & CWD in mount | PASS |
-| 14 | Clean unmount & remount persistence | File persists across unmount/remount cycle | PASS |
-| 15 | Cleanup test artifacts via VFS unlink | `vfs_unlink` removes files and frees resources | PASS |
+| **Test 1** | Boot Integrity & 24-Row Budget | **PASS** | Kernel boots cleanly; display output within 24 rows |
+| **Test 2** | Shell Command Table & Screen Budget | **PASS** | `help` command output fits within 24 rows |
+| **Test 3** | Argument Parsing: Empty `run` | **PASS** | Emits `Usage: run <path>` |
+| **Test 4** | Argument Parsing: Excess Arguments | **PASS** | Emits `run: too many arguments` on `run a b` |
+| **Test 5** | Non-Existent Binary Execution | **PASS** | Emits `Error: File not found: /nope` |
+| **Test 6** | Directory Execution Rejection | **PASS** | Emits `Error: Cannot execute directory: /bin` |
+| **Test 7** | RAMFS Executable Launch | **PASS** | `run /bin/test` launches and completes with status 42 |
+| **Test 8** | Corrupted Binary Rejection | **PASS** | `run /bin/bad` fails validation cleanly without crash |
+| **Test 9** | Persistent ELF via Absolute Path | **PASS** | `run /disk/bin/hello` prints message and exits with status 42 |
+| **Test 10** | Persistent ELF via Root Path | **PASS** | `run /disk/hello` executes and exits with status 42 |
+| **Test 11** | Persistent ELF via Fallback Path | **PASS** | `run /bin/hello` transparently resolves to `/disk/bin/hello` |
+| **Test 12** | Persistent ELF via Relative Path | **PASS** | `cd /disk; run bin/hello` resolves and executes |
+| **Test 13** | Persistent ELF from Current Directory | **PASS** | `cd /disk/bin; run hello` resolves and executes |
+| **Test 14** | Process Launch Notification | **PASS** | Emits `started process <PID>` |
+| **Test 15** | Ring 3 Execution & Syscall Verification | **PASS** | Emits `[ELF Ring 3] Hello from persistent ELF executable!` |
+| **Test 16** | Clean Process Termination | **PASS** | Process terminates cleanly and reclaims resources |
+| **Test 17** | Memory Reclamation (Leak-Free) | **PASS** | Heap invariant preserved (`Used: 0 bytes`, `Free: 65512 bytes`) |
+| **Test 18** | Repeated Execution Stability | **PASS** | 10 consecutive process executions succeed without degradation |
+| **Test 19** | Process Limit Handling | **PASS** | System handles maximum process table occupancy gracefully |
+| **Test 20** | Cross-Session Persistence | **PASS** | Persistent binary loads and executes across cold QEMU reboots |
 
 ---
 
-## 3. Automated Test Matrix (`test_stage12e.py`)
-
-Dedicated test suite verifying 15 automated scenarios across QEMU instances:
-
-- **Test 1 (Boot Integrity and 25-Row Budget)**: PASS
-- **Test 2 (Shell Command Table Layout & 24-Row Budget)**: PASS
-- **Test 3 ('vfs12etest' In-Kernel Suite Execution)**: PASS (15/15 checks)
-- **Test 4 (File Creation via VFS: `touch /disk/shell_test.txt`)**: PASS
-- **Test 5 (Write & Cat via VFS/FD: `writefile /disk/msg.txt HelloFrom12E`)**: PASS
-- **Test 6 (Subdirectory & Subfile Operations)**: PASS
-- **Test 7 (Directory Iteration: `ls /disk`)**: PASS
-- **Test 8 (CWD Integration into Mount: `cd /disk; pwd`)**: PASS
-- **Test 9 (Relative Path Operations from CWD in Mount)**: PASS
-- **Test 10 (Cross-Boundary `..` Traversal: `cat ../readme.txt`)**: PASS
-- **Test 11 (Root `..` Clamping: `cd /; cd ..; pwd`)**: PASS
-- **Test 12 (Return to Parent via `cd ..`: `cd /disk; cd ..; pwd`)**: PASS
-- **Test 13 (File Deletion via VFS: `rm /disk/shell_test.txt`)**: PASS
-- **Test 14 (Busy Unmount Rejection When CWD Inside Mount)**: PASS
-- **Test 15 (Cross-Boot Persistence Across Separate QEMU Sessions)**: PASS
-
----
-
-## 4. Full Regression Summary
+## 4. Full Regression Verification
 
 - `test_stage12a.py`: **8/8 PASS** (100%)
 - `test_stage12b.py`: **8/8 PASS** (100%)
 - `test_stage12c.py`: **10/10 PASS** (100%)
 - `test_stage12d.py`: **15/15 PASS** (100%)
 - `test_stage12e.py`: **15/15 PASS** (100%)
-- **Total Stage 12 Matrix**: **56/56 PASS (100%)**
+- `test_stage13a.py`: **20/20 PASS** (100%)
+- **Total Stage 12A–13A Matrix**: **76/76 PASS (100%)**
 - **Compiler Warnings**: 0
 - **Linker Warnings**: 0
 - **Boot Heap Invariant**: `Used: 0 bytes`, `Free: 65512 bytes` (100% preserved)

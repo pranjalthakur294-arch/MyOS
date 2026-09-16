@@ -40,6 +40,15 @@ static size_t kstrlen(const char *s) {
     return len;
 }
 
+static int kstrncmp(const char *s1, const char *s2, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (s1[i] != s2[i] || s1[i] == '\0') {
+            return (unsigned char)s1[i] - (unsigned char)s2[i];
+        }
+    }
+    return 0;
+}
+
 /*
  * Shell Command Table Structure
  */
@@ -591,71 +600,6 @@ static void builtin_fdtest(const char *args) {
 }
 
 /*
- * Built-in Command: run
- * Loads and executes an ELF64 executable from a VFS path in Ring 3.
- * Usage: run <path>
- */
-static void builtin_run(const char *args) {
-    if (args == NULL || *args == '\0') {
-        vga_puts("Usage: run <path>\n");
-        return;
-    }
-
-    /* Skip leading whitespace */
-    const char *p = args;
-    while (*p == ' ' || *p == '\t') {
-        p++;
-    }
-    if (*p == '\0') {
-        vga_puts("Usage: run <path>\n");
-        return;
-    }
-
-    /* Extract single whitespace-delimited path token */
-    char path[VFS_PATH_MAX];
-    size_t len = 0;
-    while (*p != '\0' && *p != ' ' && *p != '\t' && len + 1 < sizeof(path)) {
-        path[len++] = *p++;
-    }
-    path[len] = '\0';
-
-    /* Execute ELF through VFS/FD pipeline */
-    process_t *proc = NULL;
-    int err = process_exec_path(path, "user_proc", &proc);
-    if (err != 0 || !proc) {
-        if (err == ELF_ERR_NOT_FOUND) {
-            vga_puts("Error: File not found: ");
-            vga_puts(path);
-            vga_putc('\n');
-        } else if (err == ELF_ERR_IS_DIR) {
-            vga_puts("Error: Cannot execute directory: ");
-            vga_puts(path);
-            vga_putc('\n');
-        } else {
-            vga_puts("Error: Failed to load ELF '");
-            vga_puts(path);
-            vga_puts("': ");
-            vga_puts(elf_strerror(err));
-            vga_putc('\n');
-        }
-        return;
-    }
-
-    /* Allow process to execute in Ring 3 under timer-driven scheduler */
-    __asm__ volatile ("sti");
-    uint64_t start_tick = timer_get_ticks();
-    while ((timer_get_ticks() - start_tick) < 200) {
-        if (proc->state == PROCESS_TERMINATED || proc->reaped) {
-            break;
-        }
-        __asm__ volatile ("hlt");
-    }
-
-    /* Cleanly reap terminated process and return physical frames to PMM */
-    process_reap_terminated();
-}
-
-/*
  * parse_single_path_arg - Extracts a single path argument token.
  * Returns:
  *    0 : single path argument successfully extracted
@@ -692,6 +636,97 @@ static int parse_single_path_arg(const char *args, char *out_path, size_t max_le
     }
 
     return 0;
+}
+
+/*
+ * Built-in Command: run
+ * Loads and executes an ELF64 executable from a VFS path in Ring 3.
+ * Usage: run <path>
+ */
+static void builtin_run(const char *args) {
+    char path[VFS_PATH_MAX];
+    int parse_res = parse_single_path_arg(args, path, sizeof(path));
+    if (parse_res == -1) {
+        vga_puts("Usage: run <path>\n");
+        return;
+    }
+    if (parse_res == -2) {
+        vga_puts("run: too many arguments\n");
+        return;
+    }
+
+    /* Execute ELF through VFS/FD pipeline */
+    process_t *proc = NULL;
+    int err = process_exec_path(path, "user_proc", &proc);
+    if (err == ELF_ERR_NOT_FOUND && kstrncmp(path, "/disk", 5) != 0) {
+        char disk_path[VFS_PATH_MAX];
+        size_t plen = kstrlen(path);
+        if (path[0] == '/') {
+            if (5 + plen < sizeof(disk_path)) {
+                disk_path[0] = '/';
+                disk_path[1] = 'd';
+                disk_path[2] = 'i';
+                disk_path[3] = 's';
+                disk_path[4] = 'k';
+                for (size_t i = 0; i <= plen; i++) {
+                    disk_path[5 + i] = path[i];
+                }
+                err = process_exec_path(disk_path, "user_proc", &proc);
+            }
+        } else {
+            if (6 + plen < sizeof(disk_path)) {
+                disk_path[0] = '/';
+                disk_path[1] = 'd';
+                disk_path[2] = 'i';
+                disk_path[3] = 's';
+                disk_path[4] = 'k';
+                disk_path[5] = '/';
+                for (size_t i = 0; i <= plen; i++) {
+                    disk_path[6 + i] = path[i];
+                }
+                err = process_exec_path(disk_path, "user_proc", &proc);
+            }
+        }
+    }
+
+    if (err != 0 || !proc) {
+        if (err == ELF_ERR_NOT_FOUND) {
+            vga_puts("Error: File not found: ");
+            vga_puts(path);
+            vga_putc('\n');
+        } else if (err == ELF_ERR_IS_DIR) {
+            vga_puts("Error: Cannot execute directory: ");
+            vga_puts(path);
+            vga_putc('\n');
+        } else if (err == ELF_ERR_PROC_LIMIT) {
+            vga_puts("Error: Process limit reached\n");
+        } else {
+            vga_puts("Error: Failed to load ELF '");
+            vga_puts(path);
+            vga_puts("': ");
+            vga_puts(elf_strerror(err));
+            vga_putc('\n');
+        }
+        return;
+    }
+
+    /* Report process start */
+    vga_puts("started process ");
+    vga_print_dec(proc->pid);
+    vga_putc('\n');
+
+    /* Allow process to execute in Ring 3 under timer-driven scheduler */
+    __asm__ volatile ("sti");
+    uint64_t start_tick = timer_get_ticks();
+    while ((timer_get_ticks() - start_tick) < 200) {
+        if (proc->state == PROCESS_TERMINATED || proc->reaped) {
+            break;
+        }
+        __asm__ volatile ("hlt");
+    }
+
+    /* Cleanly reap terminated process and return physical frames to PMM */
+    process_reap_terminated();
 }
 
 /*
