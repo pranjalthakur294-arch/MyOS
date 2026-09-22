@@ -32,6 +32,7 @@
 #define SYS_OPEN    3  /* Open file via VFS path */
 #define SYS_READ    4  /* Read from file descriptor */
 #define SYS_CLOSE   5  /* Close file descriptor */
+#define SYS_WAIT    6  /* Wait for child process termination and collect status */
 
 /* System Call Return Error Codes (signed 64-bit) */
 #define SYSCALL_SUCCESS   0
@@ -45,6 +46,7 @@
 #define SYSCALL_EMFILE   -8  /* Too many open files */
 #define SYSCALL_ENOMEM   -9  /* Out of memory */
 #define SYSCALL_ENOTSUP -10  /* Operation not supported */
+#define SYSCALL_ECHILD  -11  /* No child processes / not a child */
 
 /* Canary magic recorded upon successful syscall test suite execution */
 #define SYSCALL_TEST_MAGIC 0x515CA115ULL
@@ -77,6 +79,8 @@ bool syscall_validate_user_buffer(const void *ptr, size_t len);
 bool syscall_validate_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, size_t len);
 bool syscall_validate_writable_user_buffer(const void *ptr, size_t len);
 bool syscall_validate_writable_user_buffer_in_pml4(uint64_t pml4_phys, const void *ptr, size_t len);
+
+int64_t sys_wait(int64_t child_pid, int64_t *status_ptr);
 
 int syscall_run_test(void);
 void syscall_print_status(void);

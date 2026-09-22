@@ -486,23 +486,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     }
 
     /* 2. Locate an available process slot */
-    int slot = -1;
-    for (int i = 1; i < MAX_PROCESSES; i++) {
-        process_t *p = process_get((uint32_t)i);
-        if (p && p->state == PROCESS_UNUSED) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot < 0) {
-        for (int i = 1; i < MAX_PROCESSES; i++) {
-            process_t *p = process_get((uint32_t)i);
-            if (p && p->state == PROCESS_TERMINATED && p->reaped) {
-                slot = i;
-                break;
-            }
-        }
-    }
+    int slot = process_find_free_slot();
     if (slot < 0) {
         return NULL;
     }
@@ -576,6 +560,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     proc->exit_status = 0;
     proc->reaped = false;
     proc->is_elf = true;
+    proc->is_orphan = false;
     proc->cwd = (caller && caller->cwd) ? caller->cwd : vfs_get_root();
     vfs_node_ref(proc->cwd);
 
@@ -681,14 +666,7 @@ int process_exec_path(const char *path, const char *name, struct process **out_p
     }
 
     /* 6. Check process slot availability prior to allocation */
-    int slot = -1;
-    for (int i = 1; i < MAX_PROCESSES; i++) {
-        process_t *p = process_get((uint32_t)i);
-        if (p && (p->state == PROCESS_UNUSED || (p->state == PROCESS_TERMINATED && p->reaped))) {
-            slot = i;
-            break;
-        }
-    }
+    int slot = process_find_free_slot();
     if (slot < 0) {
         kfree(buf);
         return ELF_ERR_PROC_LIMIT;
@@ -977,8 +955,8 @@ int elf_run_validation_tests(void) {
     __asm__ volatile ("sti");
     uint64_t start_tick = timer_get_ticks();
     while ((timer_get_ticks() - start_tick) < 300) {
-        if ((proc->state == PROCESS_TERMINATED || proc->reaped) &&
-            (proc2->state == PROCESS_TERMINATED || proc2->reaped)) {
+        if ((proc->state == PROCESS_ZOMBIE || proc->reaped) &&
+            (proc2->state == PROCESS_ZOMBIE || proc2->reaped)) {
             break;
         }
         __asm__ volatile ("hlt");

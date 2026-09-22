@@ -25,6 +25,7 @@
 
 /* Assembly ISR stubs defined in interrupts.S */
 extern void isr_timer(void);
+extern void isr_yield(void);
 extern void isr_keyboard(void);
 extern void isr_page_fault(void);
 
@@ -58,6 +59,9 @@ void kernel_main(uint64_t multiboot_magic, uint64_t multiboot_info_addr) {
 
     /* 5. Install timer ISR on vector 0x20 (IRQ0) */
     idt_set_gate(IDT_TIMER_VECTOR, isr_timer, 0x08, IDT_FLAG_INTERRUPT_GATE);
+
+    /* 5b. Install synchronous yield ISR on vector 0x81 */
+    idt_set_gate(IDT_YIELD_VECTOR, isr_yield, 0x08, IDT_FLAG_INTERRUPT_GATE);
 
     /* 6. Install keyboard ISR on vector 0x21 (IRQ1) */
     idt_set_gate(IDT_KEYBOARD_VECTOR, isr_keyboard, 0x08, IDT_FLAG_INTERRUPT_GATE);

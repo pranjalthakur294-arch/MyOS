@@ -19,6 +19,7 @@ typedef enum {
     TASK_UNUSED = 0,
     TASK_READY,
     TASK_RUNNING,
+    TASK_BLOCKED,
     TASK_FINISHED
 } task_state_t;
 

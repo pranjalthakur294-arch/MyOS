@@ -22,7 +22,8 @@ typedef enum {
     PROCESS_UNUSED = 0,
     PROCESS_READY,
     PROCESS_RUNNING,
-    PROCESS_TERMINATED
+    PROCESS_BLOCKED,
+    PROCESS_ZOMBIE
 } process_state_t;
 
 /*
@@ -60,6 +61,7 @@ typedef struct process {
     int64_t exit_status;                    /* Status code passed to SYS_EXIT */
     bool reaped;                            /* True if physical frames have been reclaimed */
     bool is_elf;                            /* True if process was loaded from an ELF executable */
+    bool is_orphan;                         /* True if reparented to PID 0 upon parent termination */
     open_file_t *fds[MAX_PROCESS_FDS];      /* Per-process file descriptor table (Stage 11B) */
     vfs_node_t *cwd;                        /* Current working directory (Stage 11E) */
 } process_t;
@@ -75,11 +77,15 @@ extern process_t *current_process;
 void process_init(void);
 process_t *process_create(const void *code, size_t code_size, const char *name);
 process_t *process_create_from_elf(const void *image, size_t size, const char *name);
+int process_find_free_slot(void);
+void process_reap_orphans(void);
 void process_exit(int64_t status);
 process_t *process_get(uint32_t pid);
 process_t *process_current(void);
 uint32_t process_count(void);
 int process_set_cwd(process_t *proc, vfs_node_t *new_dir);
+int64_t process_wait(int64_t child_pid, int64_t *status, bool is_user);
+void process_reap(process_t *proc);
 void process_reap_terminated(void);
 void process_reap_terminated_ex(void *executing_task);
 int process_verify_permissions(const process_t *proc);
@@ -90,5 +96,11 @@ void process_print_list(void);
  */
 int process_run_isolation_test(void);
 void process_print_test_status(void);
+
+/*
+ * Stage 13B Process Lifecycle & Wait Verification Test Harness
+ */
+int process_run_lifecycle_tests(void);
+void process_print_lifecycle_status(void);
 
 #endif /* PROCESS_H */

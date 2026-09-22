@@ -188,8 +188,8 @@ uint64_t scheduler_tick(uint64_t current_rsp) {
         uint32_t candidate_id = (curr->id + (uint32_t)i) % MAX_TASKS;
         task_t *candidate = &table[candidate_id];
 
-        /* Skip unused and finished task slots */
-        if (candidate->state == TASK_UNUSED || candidate->state == TASK_FINISHED) {
+        /* Skip unused, finished, and blocked task slots */
+        if (candidate->state == TASK_UNUSED || candidate->state == TASK_FINISHED || candidate->state == TASK_BLOCKED) {
             continue;
         }
 
@@ -209,8 +209,14 @@ uint64_t scheduler_tick(uint64_t current_rsp) {
     /* Transition states: curr (RUNNING -> READY), next (READY -> RUNNING) */
     if (curr->state == TASK_RUNNING) {
         curr->state = TASK_READY;
+        if (curr->process) {
+            ((process_t *)curr->process)->state = PROCESS_READY;
+        }
     }
     next->state = TASK_RUNNING;
+    if (next->process) {
+        ((process_t *)next->process)->state = PROCESS_RUNNING;
+    }
     next->switch_count++;
     context_switches++;
 
@@ -240,6 +246,22 @@ uint64_t scheduler_tick(uint64_t current_rsp) {
 
     scheduler_in_schedule = false;
     return next->rsp;
+}
+
+/*
+ * yield_handler - C handler invoked from isr_yield (IDT vector 0x81).
+ * Directly invokes scheduler_tick without incrementing timer ticks or sending PIC EOI.
+ */
+uint64_t yield_handler(uint64_t current_rsp) {
+    return scheduler_tick(current_rsp);
+}
+
+/*
+ * scheduler_yield - Synchronously yields execution to the scheduler.
+ * Executes software interrupt 0x81, saving a 20-quadword context and dispatching next ready task.
+ */
+void scheduler_yield(void) {
+    __asm__ volatile ("sti; int $0x81" ::: "memory");
 }
 
 /*

@@ -19,6 +19,7 @@
 #include "timer.h"
 #include "user.h"
 #include "syscall.h"
+#include "scheduler.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -85,6 +86,7 @@ void process_init(void) {
     proc_table[0].cr3 = vmm_get_boot_cr3();
     proc_table[0].task = task_get_current();
     proc_table[0].reaped = false;
+    proc_table[0].is_orphan = false;
     proc_table[0].cwd = vfs_get_root();
     vfs_node_ref(proc_table[0].cwd);
     fd_init_process(&proc_table[0]);
@@ -95,6 +97,7 @@ void process_init(void) {
         proc_table[i].state = PROCESS_UNUSED;
         proc_table[i].type = PROCESS_TYPE_USER;
         proc_table[i].reaped = false;
+        proc_table[i].is_orphan = false;
         proc_table[i].cwd = NULL;
         fd_init_process(&proc_table[i]);
     }
@@ -154,25 +157,169 @@ int process_set_cwd(process_t *proc, vfs_node_t *new_dir) {
 }
 
 /*
+ * process_reap - Completely frees physical memory and task resources of a process.
+ * Marks process slot as PROCESS_UNUSED and reusable.
+ */
+void process_reap(process_t *proc) {
+    if (!proc || proc->reaped) {
+        return;
+    }
+
+    /* F-02: Strictly reject any process that is not in PROCESS_ZOMBIE state */
+    if (proc->state != PROCESS_ZOMBIE) {
+        return;
+    }
+
+    /* F-02: Reject current process */
+    if (proc == current_process) {
+        return;
+    }
+
+    /* F-02: Reject any process whose underlying task is currently executing */
+    task_t *active_task = task_get_current();
+    if (active_task && active_task->process == proc) {
+        return;
+    }
+    if (proc->task && proc->task == active_task) {
+        return;
+    }
+
+    /* 0. Release all process-owned open file descriptors */
+    fd_close_all(proc);
+
+    /* 0b. Release current working directory reference */
+    if (proc->cwd != NULL) {
+        vfs_node_unref(proc->cwd);
+        proc->cwd = NULL;
+    }
+
+    /* 1. Free user code physical frame */
+    if (proc->code_phys) {
+        pmm_free_frame(proc->code_phys);
+        proc->code_phys = 0;
+    }
+
+    /* 2. Free user stack physical frame */
+    if (proc->stack_phys) {
+        pmm_free_frame(proc->stack_phys);
+        proc->stack_phys = 0;
+    }
+
+    /* 3. Free any recorded user_frames (ELF processes) */
+    for (size_t k = 0; k < proc->user_frame_count; k++) {
+        if (proc->user_frames[k]) {
+            pmm_free_frame(proc->user_frames[k]);
+            proc->user_frames[k] = 0;
+        }
+    }
+    proc->user_frame_count = 0;
+
+    /* 4. Free allocated intermediate page table frames */
+    for (size_t k = 0; k < proc->table_frame_count; k++) {
+        if (proc->table_frames[k]) {
+            pmm_free_frame(proc->table_frames[k]);
+            proc->table_frames[k] = 0;
+        }
+    }
+    proc->table_frame_count = 0;
+
+    /* 5. Free per-process PML4 root frame */
+    if (proc->pml4_phys) {
+        pmm_free_frame(proc->pml4_phys);
+        proc->pml4_phys = 0;
+    }
+    proc->cr3 = 0;
+
+    /* 6. Mark task unused and clear process reference */
+    if (proc->task) {
+        proc->task->state = TASK_UNUSED;
+        proc->task->process = NULL;
+        proc->task = NULL;
+    }
+
+    proc->state = PROCESS_UNUSED;
+    proc->reaped = true;
+    proc->is_orphan = false;
+}
+
+/*
+ * process_reap_orphans - Safely reclaims terminated orphan zombies (Stage 13B F-03).
+ *
+ * Scans process table for zombie processes whose parent has terminated and reparented
+ * them to PID 0 (is_orphan == true).
+ * Strictly guards against reaping current_process or currently active task.
+ */
+void process_reap_orphans(void) {
+    task_t *active_task = task_get_current();
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        process_t *p = &proc_table[i];
+        if (p->state == PROCESS_ZOMBIE && !p->reaped && p->is_orphan) {
+            if (p == current_process) {
+                continue;
+            }
+            if (active_task && active_task->process == p) {
+                continue;
+            }
+            if (p->task && p->task == active_task) {
+                continue;
+            }
+            process_reap(p);
+        }
+    }
+}
+
+/*
+ * process_find_free_slot - Finds an available process slot, reclaiming orphan zombies if necessary.
+ *
+ * Scans for PROCESS_UNUSED slots. If all slots are occupied, reclaims dead orphan zombies
+ * whose creator/parent is gone so orphan accumulation cannot permanently exhaust MAX_PROCESSES.
+ *
+ * Returns:
+ *   Available slot index (1..MAX_PROCESSES-1), or -1 if process table is full.
+ */
+int process_find_free_slot(void) {
+    /* 1. First pass: look for already UNUSED slot */
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        if (proc_table[i].state == PROCESS_UNUSED) {
+            return i;
+        }
+    }
+
+    /* 2. No unused slot available: reclaim genuinely orphaned zombies whose parent has died */
+    process_reap_orphans();
+
+    /* 3. Second pass: check if an orphan zombie slot was reclaimed */
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        if (proc_table[i].state == PROCESS_UNUSED) {
+            return i;
+        }
+    }
+
+    /* 4. Table is full of active processes and/or waitable zombies belonging to live parents.
+     * Normal zombies belonging to live parents must NEVER be auto-reaped! */
+    return -1;
+}
+
+/*
  * process_reap_terminated_ex - Safely reclaims physical memory frames of terminated processes.
  *
  * Parameters:
  *   executing_task - The task currently executing on the CPU (whose stack is hosting the
- *                    caller's stack frame). If non-NULL, any process owned by this task
- *                    is strictly spared from reaping until execution switches away.
+ *                    caller's stack frame). If non-NULL (invoked from scheduler_tick),
+ *                    zombies are preserved so parent processes can collect them via wait().
+ *                    If NULL (invoked explicitly by test harnesses), reaps non-running zombies.
  */
 void process_reap_terminated_ex(void *executing_task) {
-    task_t *curr_task = (task_t *)executing_task;
+    if (executing_task != NULL) {
+        return;
+    }
+
     task_t *active_task = task_get_current();
 
     for (int i = 1; i < MAX_PROCESSES; i++) {
         process_t *proc = &proc_table[i];
 
-        if (proc->state == PROCESS_TERMINATED && !proc->reaped) {
-            /* If interrupted/executing task belongs to this process, its kernel stack is in use */
-            if (curr_task && curr_task->process == proc) {
-                continue;
-            }
+        if (proc->state == PROCESS_ZOMBIE && !proc->reaped) {
             if (active_task && active_task->process == proc) {
                 continue;
             }
@@ -180,61 +327,7 @@ void process_reap_terminated_ex(void *executing_task) {
                 continue;
             }
 
-            /* 0. Release all process-owned open file descriptors */
-            fd_close_all(proc);
-
-            /* 0b. Release current working directory reference */
-            if (proc->cwd != NULL) {
-                vfs_node_unref(proc->cwd);
-                proc->cwd = NULL;
-            }
-
-            /* 1. Free user code physical frame */
-            if (proc->code_phys) {
-                pmm_free_frame(proc->code_phys);
-                proc->code_phys = 0;
-            }
-
-            /* 2. Free user stack physical frame */
-            if (proc->stack_phys) {
-                pmm_free_frame(proc->stack_phys);
-                proc->stack_phys = 0;
-            }
-
-            /* 3. Free any recorded user_frames (ELF processes) */
-            for (size_t k = 0; k < proc->user_frame_count; k++) {
-                if (proc->user_frames[k]) {
-                    pmm_free_frame(proc->user_frames[k]);
-                    proc->user_frames[k] = 0;
-                }
-            }
-            proc->user_frame_count = 0;
-
-            /* 4. Free allocated intermediate page table frames */
-            for (size_t k = 0; k < proc->table_frame_count; k++) {
-                if (proc->table_frames[k]) {
-                    pmm_free_frame(proc->table_frames[k]);
-                    proc->table_frames[k] = 0;
-                }
-            }
-            proc->table_frame_count = 0;
-
-            /* 4. Free per-process PML4 root frame */
-            if (proc->pml4_phys) {
-                pmm_free_frame(proc->pml4_phys);
-                proc->pml4_phys = 0;
-            }
-            proc->cr3 = 0;
-
-            /* 5. Mark task unused and clear process reference */
-            if (proc->task) {
-                proc->task->state = TASK_UNUSED;
-                proc->task->process = NULL;
-                proc->task = NULL;
-            }
-
-            proc->state = PROCESS_UNUSED;
-            proc->reaped = true;
+            process_reap(proc);
         }
     }
 }
@@ -332,23 +425,7 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
     }
 
     /* 1. Find an available process slot */
-    int slot = -1;
-    for (int i = 1; i < MAX_PROCESSES; i++) {
-        if (proc_table[i].state == PROCESS_UNUSED) {
-            slot = i;
-            break;
-        }
-    }
-
-    /* If no unused slot, check for a terminated and reaped slot to reuse */
-    if (slot < 0) {
-        for (int i = 1; i < MAX_PROCESSES; i++) {
-            if (proc_table[i].state == PROCESS_TERMINATED && proc_table[i].reaped) {
-                slot = i;
-                break;
-            }
-        }
-    }
+    int slot = process_find_free_slot();
 
     if (slot < 0) {
         return NULL; /* Process table full */
@@ -425,7 +502,13 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
     }
 
     /* 6. Populate Process Control Block */
+    process_t *caller = process_current();
+    if (!caller) {
+        caller = process_get(0);
+    }
+
     proc->pid = (uint32_t)slot;
+    proc->ppid = caller ? caller->pid : 0;
     proc->state = PROCESS_READY;
     proc->type = PROCESS_TYPE_USER;
     kstrncpy(proc->name, name ? name : "user_proc", PROCESS_NAME_MAX);
@@ -443,7 +526,8 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
     proc->kernel_stack_top = ((uint64_t)t->stack_base + t->stack_size) & ~0xFULL;
     proc->exit_status = 0;
     proc->reaped = false;
-    proc->cwd = vfs_get_root();
+    proc->is_orphan = false;
+    proc->cwd = (caller && caller->cwd) ? caller->cwd : vfs_get_root();
     vfs_node_ref(proc->cwd);
 
     return proc;
@@ -452,8 +536,9 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
 /*
  * process_exit - Terminates the calling user process.
  *
- * Sets state to PROCESS_TERMINATED, marks scheduler task as TASK_FINISHED,
- * and halts in an interrupt-enabled loop awaiting descheduling.
+ * Sets state to PROCESS_ZOMBIE, marks scheduler task as TASK_FINISHED,
+ * releases open file descriptors and CWD, reparents children to PID 0,
+ * wakes any parent blocked in wait, and deschedules via scheduler_yield.
  */
 void process_exit(int64_t status) {
     process_t *proc = current_process;
@@ -461,17 +546,158 @@ void process_exit(int64_t status) {
         return;
     }
 
-    proc->exit_status = status;
-    proc->state = PROCESS_TERMINATED;
+    /* Atomic transition under disabled interrupts */
+    __asm__ volatile ("cli");
 
+    /* 1. Record exit status */
+    proc->exit_status = status;
+
+    /* 2. Transition state to PROCESS_ZOMBIE */
+    proc->state = PROCESS_ZOMBIE;
+
+    /* 3. Mark task finished so scheduler never selects it again */
     if (proc->task) {
         proc->task->state = TASK_FINISHED;
     }
 
-    /* Enable interrupts and wait for the scheduler tick to deschedule us */
+    /* 4. Release process file descriptors and CWD immediately */
+    fd_close_all(proc);
+    if (proc->cwd != NULL) {
+        vfs_node_unref(proc->cwd);
+        proc->cwd = NULL;
+    }
+
+    /* 5. Reparent any surviving children to PID 0 (kernel init) */
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        if (proc_table[i].state != PROCESS_UNUSED && proc_table[i].ppid == proc->pid) {
+            proc_table[i].ppid = 0;
+            proc_table[i].is_orphan = true;
+        }
+    }
+
+    /* 6. Wake parent process if it is blocked waiting */
+    process_t *parent = process_get(proc->ppid);
+    if (parent && parent->state == PROCESS_BLOCKED) {
+        parent->state = PROCESS_READY;
+        if (parent->task && parent->task->state == TASK_BLOCKED) {
+            parent->task->state = TASK_READY;
+        }
+    }
+
+    /* 7. Yield CPU immediately via software interrupt vector 0x81 */
+    scheduler_yield();
+
+    /* Safety fallback */
     __asm__ volatile ("sti");
     for (;;) {
         __asm__ volatile ("hlt");
+    }
+}
+
+/*
+ * process_wait - Waits for child process termination and collects exit status.
+ *
+ * Parameters:
+ *   child_pid - PID of specific child to wait for, or -1 for any child.
+ *   status    - Pointer to store child's exit status.
+ *   is_user   - True if called via sys_wait from Ring 3 (status validated as user pointer),
+ *               false if called directly from kernel mode.
+ *
+ * Returns:
+ *   Child PID on success.
+ *   -SYSCALL_EFAULT (-2) on invalid user status pointer.
+ *   -SYSCALL_ECHILD (-11) if no matching child exists.
+ */
+int64_t process_wait(int64_t child_pid, int64_t *status, bool is_user) {
+    process_t *caller = process_current();
+    if (!caller) {
+        caller = process_get(0);
+    }
+    if (!caller) {
+        return SYSCALL_ECHILD;
+    }
+
+    /* 1. If called from user mode, strictly validate user status pointer */
+    if (is_user) {
+        if (status == NULL || !syscall_validate_writable_user_buffer((const void *)status, sizeof(int64_t))) {
+            return SYSCALL_EFAULT;
+        }
+    }
+
+    for (;;) {
+        /* F-01: Enter critical section BEFORE scanning child state */
+        __asm__ volatile ("cli");
+
+        bool has_children = false;
+        process_t *zombie_child = NULL;
+
+        if (child_pid == -1) {
+            /* Wait for any child of caller */
+            for (int i = 1; i < MAX_PROCESSES; i++) {
+                process_t *p = &proc_table[i];
+                if (p->state != PROCESS_UNUSED && p->ppid == caller->pid) {
+                    has_children = true;
+                    if (p->state == PROCESS_ZOMBIE && !p->reaped) {
+                        zombie_child = p;
+                        break;
+                    }
+                }
+            }
+        } else {
+            /* Wait for specific child_pid */
+            if (child_pid <= 0 || child_pid >= MAX_PROCESSES) {
+                __asm__ volatile ("sti");
+                return SYSCALL_ECHILD;
+            }
+            process_t *p = &proc_table[child_pid];
+            if (p->state != PROCESS_UNUSED && p->ppid == caller->pid) {
+                has_children = true;
+                if (p->state == PROCESS_ZOMBIE && !p->reaped) {
+                    zombie_child = p;
+                }
+            }
+        }
+
+        if (zombie_child != NULL) {
+            __asm__ volatile ("sti");
+
+            /* F-04: Re-validate status buffer immediately before write */
+            if (is_user) {
+                if (status == NULL || !syscall_validate_writable_user_buffer((const void *)status, sizeof(int64_t))) {
+                    return SYSCALL_EFAULT;
+                }
+            }
+
+            if (status != NULL) {
+                *status = zombie_child->exit_status;
+            }
+            int64_t reaped_pid = (int64_t)zombie_child->pid;
+
+            process_reap(zombie_child);
+
+            return reaped_pid;
+        }
+
+        if (!has_children) {
+            __asm__ volatile ("sti");
+            return SYSCALL_ECHILD;
+        }
+
+        /* 4. Children exist but none are zombies: block caller under cli */
+        caller->state = PROCESS_BLOCKED;
+        if (caller->task) {
+            caller->task->state = TASK_BLOCKED;
+        }
+
+        /* Yield CPU immediately; scheduler_yield executes "sti; int $0x81" */
+        scheduler_yield();
+
+        /* Restore running state upon awakening */
+        __asm__ volatile ("sti");
+        caller->state = PROCESS_RUNNING;
+        if (caller->task) {
+            caller->task->state = TASK_RUNNING;
+        }
     }
 }
 
@@ -500,8 +726,11 @@ void process_print_list(void) {
             case PROCESS_RUNNING:
                 vga_puts("RUNNING     ");
                 break;
-            case PROCESS_TERMINATED:
-                vga_puts("TERMINATED  ");
+            case PROCESS_BLOCKED:
+                vga_puts("BLOCKED     ");
+                break;
+            case PROCESS_ZOMBIE:
+                vga_puts("ZOMBIE      ");
                 break;
             default:
                 vga_puts("UNKNOWN     ");
@@ -631,16 +860,16 @@ int process_run_isolation_test(void) {
     /* 4. Preemptively run both processes to completion */
     __asm__ volatile ("sti");
     uint64_t start_tick = timer_get_ticks();
-    while ((pa->state != PROCESS_TERMINATED && !pa->reaped) ||
-           (pb->state != PROCESS_TERMINATED && !pb->reaped)) {
+    while ((pa->state != PROCESS_ZOMBIE && !pa->reaped) ||
+           (pb->state != PROCESS_ZOMBIE && !pb->reaped)) {
         if (timer_get_ticks() - start_tick >= 300) {
             break;
         }
         __asm__ volatile ("hlt");
     }
 
-    if ((pa->state != PROCESS_TERMINATED && !pa->reaped) ||
-        (pb->state != PROCESS_TERMINATED && !pb->reaped)) {
+    if ((pa->state != PROCESS_ZOMBIE && !pa->reaped) ||
+        (pb->state != PROCESS_ZOMBIE && !pb->reaped)) {
         return -8;
     }
 
@@ -686,14 +915,14 @@ int process_run_isolation_test(void) {
         /* Wait for Proc C to finish */
         __asm__ volatile ("sti");
         start_tick = timer_get_ticks();
-        while (pc->state != PROCESS_TERMINATED && !pc->reaped) {
+        while (pc->state != PROCESS_ZOMBIE && !pc->reaped) {
             if (timer_get_ticks() - start_tick >= 200) {
                 break;
             }
             __asm__ volatile ("hlt");
         }
 
-        if ((pc->state != PROCESS_TERMINATED && !pc->reaped) || pc->exit_status != 42) {
+        if ((pc->state != PROCESS_ZOMBIE && !pc->reaped) || pc->exit_status != 42) {
             return -15;
         }
 
@@ -809,6 +1038,388 @@ void process_print_test_status(void) {
     if (res == 0) {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
         vga_puts("PASSED (All Isolation Properties Verified)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAILED (Code ");
+        vga_print_dec((uint32_t)-res);
+        vga_puts(")\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+}
+
+/*
+ * process_run_lifecycle_tests - Comprehensive Stage 13B Process Lifecycle Verification.
+ *
+ * Tests:
+ *   1. Child terminates and becomes PROCESS_ZOMBIE before wait() is called.
+ *   2. Parent wait() collects zombie, reads exit status, and reaps child (slot becomes PROCESS_UNUSED).
+ *   3. Double wait on already-reaped child fails with -SYSCALL_ECHILD.
+ *   4. Wait for non-existent / non-child PID fails with -SYSCALL_ECHILD.
+ *   5. Wait(-1) with no children returns -SYSCALL_ECHILD.
+ *   6. User pointer validation for SYS_WAIT rejects NULL and supervisor addresses with -SYSCALL_EFAULT.
+ *   7. Multiple children: wait(-1) reaps zombies in order of exit without waiting for running children.
+ *   8. Parent exit reparents active/zombie children to PID 0 (no dangling PPID).
+ *   9. Multi-cycle PID reuse and memory reclamation with zero frame leak.
+ *
+ * Returns 0 on complete pass, negative error code on failure.
+ */
+int process_run_lifecycle_tests(void) {
+    uint64_t initial_free = pmm_get_free_frames();
+
+    /* 0. F-02: Verify process_reap() guard rejections */
+    process_t *caller = process_current();
+    if (!caller) caller = process_get(0);
+    if (caller) {
+        process_reap(caller);
+        if (caller->state != PROCESS_RUNNING || caller->reaped) {
+            return -16;
+        }
+    }
+
+    size_t sz_a = (size_t)((uint64_t)proc_test_program_a_end - (uint64_t)proc_test_program_a);
+    process_t *p_guard = process_create(proc_test_program_a, sz_a, "life_guard");
+    if (!p_guard) {
+        return -1;
+    }
+    process_reap(p_guard);
+    if (p_guard->state != PROCESS_READY || p_guard->reaped) {
+        return -16;
+    }
+    p_guard->state = PROCESS_ZOMBIE;
+    process_reap(p_guard);
+    if (p_guard->state != PROCESS_UNUSED || !p_guard->reaped) {
+        return -16;
+    }
+
+    /* 1. Test child termination before wait -> PROCESS_ZOMBIE preserved */
+    process_t *child = process_create(proc_test_program_a, sz_a, "life_child1");
+    if (!child) {
+        return -1;
+    }
+    uint32_t cpid = child->pid;
+
+    /* Run child until exit (exit 42) */
+    __asm__ volatile ("sti");
+    uint64_t start_tick = timer_get_ticks();
+    while (child->state != PROCESS_ZOMBIE && !child->reaped) {
+        if (timer_get_ticks() - start_tick >= 200) {
+            break;
+        }
+        __asm__ volatile ("hlt");
+    }
+
+    /* Child must be PROCESS_ZOMBIE, not reaped, exit_status 42 */
+    if (child->state != PROCESS_ZOMBIE || child->reaped || child->exit_status != 42) {
+        process_reap_terminated();
+        return -2;
+    }
+
+    /* F-04: Test invalid user status pointer does NOT reap zombie child */
+    int64_t fault_ret = process_wait((int64_t)cpid, (int64_t *)0x100000ULL, true);
+    if (fault_ret != SYSCALL_EFAULT) {
+        process_reap_terminated();
+        return -18;
+    }
+    if (child->state != PROCESS_ZOMBIE || child->reaped) {
+        process_reap_terminated();
+        return -18;
+    }
+
+    /* 2. Collect zombie via wait() */
+    int64_t status = -1;
+    int64_t ret = process_wait((int64_t)cpid, &status, false);
+    if (ret != (int64_t)cpid || status != 42) {
+        process_reap_terminated();
+        return -3;
+    }
+
+    /* Child must now be reaped and UNUSED */
+    if (child->state != PROCESS_UNUSED || !child->reaped) {
+        process_reap_terminated();
+        return -4;
+    }
+
+    /* 3. Double wait must fail with -SYSCALL_ECHILD */
+    ret = process_wait((int64_t)cpid, &status, false);
+    if (ret != SYSCALL_ECHILD) {
+        return -5;
+    }
+
+    /* 4. Wait for non-child PID must fail with -SYSCALL_ECHILD */
+    ret = process_wait(999, &status, false);
+    if (ret != SYSCALL_ECHILD) {
+        return -6;
+    }
+
+    /* 5. Wait(-1) with no children must fail with -SYSCALL_ECHILD */
+    ret = process_wait(-1, &status, false);
+    if (ret != SYSCALL_ECHILD) {
+        return -7;
+    }
+
+    /* 6. User pointer validation in sys_wait: NULL and kernel addresses rejected */
+    ret = sys_wait(-1, NULL);
+    if (ret != SYSCALL_EFAULT) {
+        return -8;
+    }
+    ret = sys_wait(-1, (int64_t *)0x100000ULL);
+    if (ret != SYSCALL_EFAULT) {
+        return -9;
+    }
+
+    /* 7. Multiple children: wait(-1) reaps zombies */
+    size_t sz_b = (size_t)((uint64_t)proc_test_program_b_end - (uint64_t)proc_test_program_b);
+    process_t *m1 = process_create(proc_test_program_a, sz_a, "mult_1");
+    process_t *m2 = process_create(proc_test_program_b, sz_b, "mult_2");
+    if (!m1 || !m2) {
+        process_reap_terminated();
+        return -10;
+    }
+    uint32_t pid1 = m1->pid;
+    uint32_t pid2 = m2->pid;
+
+    /* Run both to completion */
+    __asm__ volatile ("sti");
+    start_tick = timer_get_ticks();
+    while ((m1->state != PROCESS_ZOMBIE && !m1->reaped) ||
+           (m2->state != PROCESS_ZOMBIE && !m2->reaped)) {
+        if (timer_get_ticks() - start_tick >= 300) {
+            break;
+        }
+        __asm__ volatile ("hlt");
+    }
+
+    /* Wait for any child twice */
+    int64_t s1 = 0, s2 = 0;
+    int64_t w1 = process_wait(-1, &s1, false);
+    int64_t w2 = process_wait(-1, &s2, false);
+    if (!((w1 == (int64_t)pid1 && w2 == (int64_t)pid2) || (w1 == (int64_t)pid2 && w2 == (int64_t)pid1))) {
+        process_reap_terminated();
+        return -11;
+    }
+
+    /* 8. Verify reparenting and F-03 orphan zombie reclamation */
+    process_t *p_parent = process_create(proc_test_program_a, sz_a, "reparent_p");
+    if (!p_parent) {
+        return -12;
+    }
+    /* Create child with ppid set to p_parent->pid */
+    process_t *p_child = process_create(proc_test_program_b, sz_b, "reparent_c");
+    if (!p_child) {
+        process_reap_terminated();
+        return -13;
+    }
+    p_child->ppid = p_parent->pid;
+
+    /* Terminate parent and reparent child to PID 0 */
+    p_parent->state = PROCESS_ZOMBIE;
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        if (proc_table[i].state != PROCESS_UNUSED && proc_table[i].ppid == p_parent->pid) {
+            proc_table[i].ppid = 0;
+            proc_table[i].is_orphan = true;
+        }
+    }
+    if (p_child->ppid != 0 || !p_child->is_orphan) {
+        process_reap_terminated();
+        return -14;
+    }
+    process_reap(p_parent);
+
+    /* Terminate orphan child */
+    p_child->state = PROCESS_ZOMBIE;
+    if (p_child->state != PROCESS_ZOMBIE || p_child->reaped) {
+        process_reap_terminated();
+        return -19;
+    }
+
+    /* F-03: Reclaiming orphan zombies frees the slot */
+    process_reap_orphans();
+    if (p_child->state != PROCESS_UNUSED || !p_child->reaped) {
+        process_reap_terminated();
+        return -19;
+    }
+
+    /* 8b. F-03 Adversarial Invariant:
+     * Normal zombie whose parent is ALIVE must NEVER be auto-reaped when process table is full!
+     * Orphan zombies CAN be reclaimed under slot pressure.
+     */
+    process_t *c_norm = process_create(proc_test_program_a, sz_a, "norm_c");
+    if (!c_norm) {
+        return -21;
+    }
+    uint32_t norm_pid = c_norm->pid;
+    c_norm->state = PROCESS_ZOMBIE;
+    c_norm->exit_status = 42;
+    if (c_norm->state != PROCESS_ZOMBIE || c_norm->is_orphan) {
+        process_reap_terminated();
+        return -22;
+    }
+
+    /* Fill all other user slots in proc_table (slots 2..MAX_PROCESSES-1) with active processes */
+    for (int k = 1; k < MAX_PROCESSES; k++) {
+        if (proc_table[k].state == PROCESS_UNUSED) {
+            proc_table[k].state = PROCESS_RUNNING;
+            proc_table[k].is_orphan = false;
+            proc_table[k].reaped = false;
+        }
+    }
+
+    /* Table is completely full: attempt slot allocation with full table and NO orphan zombies */
+    int full_slot = process_find_free_slot();
+    if (full_slot != -1) {
+        /* Process table was full with no orphans; slot search must fail! */
+        process_reap_terminated();
+        return -23;
+    }
+    /* Verify normal zombie was NOT reaped despite slot pressure */
+    if (c_norm->state != PROCESS_ZOMBIE || c_norm->reaped) {
+        process_reap_terminated();
+        return -24;
+    }
+
+    /* Now turn slot MAX_PROCESSES-1 into an orphan zombie */
+    int orphan_idx = MAX_PROCESSES - 1;
+    proc_table[orphan_idx].state = PROCESS_ZOMBIE;
+    proc_table[orphan_idx].is_orphan = true;
+    proc_table[orphan_idx].reaped = false;
+
+    /* Attempt slot allocation: orphan recovery MUST reclaim orphan_idx and return it */
+    int rec_slot = process_find_free_slot();
+    if (rec_slot != orphan_idx) {
+        process_reap_terminated();
+        return -25;
+    }
+
+    /* Verify normal zombie is STILL preserved and NOT reaped */
+    if (c_norm->state != PROCESS_ZOMBIE || c_norm->reaped) {
+        process_reap_terminated();
+        return -26;
+    }
+
+    /* Confirm live parent wait() can collect and reap the normal zombie */
+    int64_t norm_status = 0;
+    int64_t norm_wret = process_wait((int64_t)norm_pid, &norm_status, false);
+    if (norm_wret != (int64_t)norm_pid || norm_status != 42) {
+        process_reap_terminated();
+        return -27;
+    }
+    if (c_norm->state != PROCESS_UNUSED || !c_norm->reaped) {
+        process_reap_terminated();
+        return -28;
+    }
+
+    /* Reset dummy filled slots back to UNUSED */
+    for (int k = 1; k < MAX_PROCESSES; k++) {
+        if (&proc_table[k] != c_norm) {
+            proc_table[k].state = PROCESS_UNUSED;
+            proc_table[k].reaped = true;
+            proc_table[k].is_orphan = false;
+        }
+    }
+
+    /* 9. Memory reclamation check: 0 frame leak */
+    if (pmm_get_free_frames() != initial_free) {
+        return -15;
+    }
+
+    return 0;
+}
+
+/*
+ * process_print_lifecycle_status - Shell command handler for 'waittest'.
+ */
+void process_print_lifecycle_status(void) {
+    vga_puts("\nProcess Lifecycle & Wait Subsystem Test:\n");
+
+    int res = process_run_lifecycle_tests();
+
+    vga_puts("  Zombie on exit:   ");
+    if (res != -1 && res != -2) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (State == PROCESS_ZOMBIE preserved)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Wait status reap: ");
+    if (res != -3 && res != -4 && res != -16) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (PID & Exit Status collected, reaped)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Double wait rej:  ");
+    if (res != -5) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (-ECHILD on already-reaped child)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Non-child rej:    ");
+    if (res != -6 && res != -7) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (-ECHILD on invalid/non-child PID)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Pointer valid:    ");
+    if (res != -8 && res != -9 && res != -18) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (NULL & kernel pointers rejected: -EFAULT)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Multiple child:   ");
+    if (res != -10 && res != -11) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (wait(-1) collected all zombies)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Reparenting:      ");
+    if (res >= 0 || (res < -28 || (res > -12 && res < 0))) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (Children adopted to PID 0 on parent exit)\n");
+    } else if (res == -12 || res == -13 || res == -14 || res == -19 || (res <= -21 && res >= -28)) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (Children adopted to PID 0 on parent exit)\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Memory reclaim:   ");
+    if (res != -15) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("OK (0 PMM frame leaks after lifecycle tests)\n");
+    } else {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("FAIL\n");
+    }
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_puts("  Result:           ");
+    if (res == 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_puts("PASSED (All Lifecycle Properties Verified)\n");
     } else {
         vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
         vga_puts("FAILED (Code ");

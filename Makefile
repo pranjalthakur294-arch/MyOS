@@ -67,6 +67,17 @@ USER_HELLO_BIN     := $(BUILD_DIR)/user/hello.elf
 USER_HELLO_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/hello.o
 USER_HELLO_LDFLAGS := -nostdlib -N -T $(USER_DIR)/linker.ld
 
+USER_EXIT0_BIN     := $(BUILD_DIR)/user/exit0.elf
+USER_EXIT0_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/exit0.o
+
+USER_EXIT42_BIN    := $(BUILD_DIR)/user/exit42.elf
+USER_EXIT42_OBJS   := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/exit42.o
+
+USER_DELAYED_BIN   := $(BUILD_DIR)/user/delayed_exit.elf
+USER_DELAYED_OBJS  := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/delayed_exit.o
+
+USER_TEST_BINS     := $(USER_HELLO_BIN) $(USER_EXIT0_BIN) $(USER_EXIT42_BIN) $(USER_DELAYED_BIN)
+
 # Raw Test Disk Image (32 MiB)
 DISK_IMG     := $(BUILD_DIR)/disk.img
 
@@ -75,7 +86,7 @@ DISK_IMG     := $(BUILD_DIR)/disk.img
 # ------------------------------------------------------------------------------
 .PHONY: all clean run run-iso iso check-env help
 
-all: $(KERNEL_BIN) $(DISK_IMG) $(USER_HELLO_BIN)
+all: $(KERNEL_BIN) $(DISK_IMG) $(USER_TEST_BINS)
 
 # Compile User-Space ELF Objects
 $(BUILD_DIR)/user/%.o: $(USER_DIR)/%.S
@@ -96,6 +107,21 @@ $(USER_HELLO_BIN): $(USER_HELLO_OBJS) $(USER_DIR)/linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_HELLO_OBJS)
 	@echo "[SUCCESS] User hello ELF binary created at $@"
+
+$(USER_EXIT0_BIN): $(USER_EXIT0_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_EXIT0_OBJS)
+	@echo "[SUCCESS] User exit0 ELF binary created at $@"
+
+$(USER_EXIT42_BIN): $(USER_EXIT42_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_EXIT42_OBJS)
+	@echo "[SUCCESS] User exit42 ELF binary created at $@"
+
+$(USER_DELAYED_BIN): $(USER_DELAYED_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_DELAYED_OBJS)
+	@echo "[SUCCESS] User delayed_exit ELF binary created at $@"
 
 
 # Ensure embedded ELF assembly depends on the compiled user binary
@@ -133,10 +159,10 @@ $(KERNEL_ISO): $(KERNEL_BIN) grub.cfg
 	@echo "[SUCCESS] Bootable ISO created at $@"
 
 # Create a 32 MiB raw test disk image populated with PFS and user executables
-$(DISK_IMG): $(USER_HELLO_BIN) tools/pfs_populate.py
+$(DISK_IMG): $(USER_TEST_BINS) tools/pfs_populate.py
 	@mkdir -p $(BUILD_DIR)
 	@dd if=/dev/zero of=$@ bs=1M count=32 status=none
-	@python3 tools/pfs_populate.py
+	@python3 tools/pfs_populate.py 2>/dev/null || py -3 tools/pfs_populate.py
 
 # Run directly in QEMU via direct kernel boot (-kernel)
 run: $(KERNEL_BIN) $(DISK_IMG)

@@ -486,6 +486,40 @@
     - Shell `help` and boot display budget strictly preserved within 24 rows.
     - Zero memory leaks, zero frame leaks, zero FD leaks, and complete post-termination cleanup.
 
+- **Stage 13B: Process Lifecycle & Wait Subsystem**
+  - Proper Parent/Child Relationship & Lifecycle State Machine:
+    - Expanded `process_state_t`: `PROCESS_UNUSED`, `PROCESS_READY`, `PROCESS_RUNNING`, `PROCESS_BLOCKED`, `PROCESS_ZOMBIE` (`PROCESS_TERMINATED` eliminated).
+    - Expanded `task_state_t`: `TASK_UNUSED`, `TASK_READY`, `TASK_RUNNING`, `TASK_BLOCKED`, `TASK_FINISHED`.
+    - When a process exits (`SYS_EXIT`), it does NOT disappear immediately: its state becomes `PROCESS_ZOMBIE`, its task becomes `TASK_FINISHED`, open file descriptors are closed, CWD reference is released, and its children are reparented to PID 0.
+    - Exiting process wakes up its parent if the parent is blocked waiting for it.
+  - Zero Busy-Waiting Architecture:
+    - Blocked tasks (`TASK_BLOCKED` / `PROCESS_BLOCKED`) consume 0 CPU cycles.
+    - Scheduler strictly excludes `TASK_BLOCKED` tasks from round-robin execution.
+    - Kernel yield mechanism implemented via software interrupt vector `0x81` (`int $0x81`), allowing calling tasks to immediately surrender the remainder of their time slice and switch stacks cleanly.
+  - `SYS_WAIT` (Syscall 6) Implementation:
+    - Signature: `int64_t sys_wait(int64_t child_pid, int64_t *status_ptr);`.
+    - `wait(-1, status_ptr)`: waits for any child of the caller.
+    - `wait(pid, status_ptr)`: waits for a specific child PID.
+    - If a matching zombie child exists, status is copied, child is reaped atomically, and reaped child's PID is returned.
+    - If matching children exist but none are zombies yet, parent transitions to `PROCESS_BLOCKED` / `TASK_BLOCKED` and yields the CPU until a child exits.
+    - Returns `-SYSCALL_ECHILD` (-11) if no matching child exists or if the child has already been waited on.
+    - Pointer validation: `status_ptr` is validated before modifying any child state (`NULL` or kernel pointers return `-SYSCALL_EFAULT` (-2) without reaping the child).
+  - Atomic Reaping & Resource Reclamation:
+    - `process_reap(process_t *child)` unmaps and frees all user code frames, stack frames, dynamic user frames, page table frames, PML4 root, and resets the process slot to `PROCESS_UNUSED` for PID reuse.
+    - Guaranteed zero PMM frame leaks and zero heap memory leaks.
+  - Reparenting Semantics:
+    - When a parent process terminates while child processes are still alive, all children are reparented to PID 0 (kernel init) so they never become orphaned zombies.
+  - Shell Integration:
+    - Re-architected shell `run <path>` to execute `process_wait((int64_t)proc->pid, &status, false)` instead of busy-wait polling loops.
+    - Preserves VGA 25-row screen budget.
+  - Persistent User Binaries on Disk Image:
+    - `/bin/exit0`: Minimal Ring 3 executable returning exit status 0.
+    - `/bin/exit42`: Minimal Ring 3 executable returning exit status 42.
+    - `/bin/delayed_exit`: Ring 3 executable performing sustained computation across scheduler timer ticks before exiting with status 42.
+  - In-Kernel & Automated Verification:
+    - In-kernel test command `waittest` exercising 11 lifecycle properties (zombie state, wait status collection, double wait rejection, non-child rejection, pointer fault defense, multi-child collection, reparenting, zero memory leaks).
+    - Comprehensive test suite `test_stage13b.py` covering all 26 verification checks.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -568,10 +602,14 @@ MyOS/
 ├── test_stage12d.py             # Stage 12D automated test suite
 ├── test_stage12e.py             # Stage 12E automated test suite
 ├── test_stage13a.py             # Stage 13A automated test suite
+├── test_stage13b.py             # Stage 13B automated test suite
 ├── tools/
 │   └── pfs_populate.py          # Offline PFS population tool for disk images
 ├── user/
 │   ├── hello.c                  # Ring 3 persistent user ELF executable (Stage 13A)
+│   ├── exit0.c                  # Ring 3 user ELF exiting with status 0 (Stage 13B)
+│   ├── exit42.c                 # Ring 3 user ELF exiting with status 42 (Stage 13B)
+│   ├── delayed_exit.c           # Ring 3 user ELF compute across ticks (Stage 13B)
 │   ├── linker.ld                # User ELF linker script (PT_LOAD segments at 0x60000000)
 │   ├── start.S                  # User entry point (_start) with int 0x80 SYS_EXIT
 │   └── test_program.c           # Ring 3 user test program (CPL 3, BSS/data, syscalls)
@@ -665,4 +703,5 @@ make run
 ### Run Automated Tests:
 ```bash
 python3 test_stage13a.py
+python3 test_stage13b.py
 ```

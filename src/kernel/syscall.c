@@ -424,6 +424,26 @@ int64_t sys_exit(int64_t status) {
 }
 
 /*
+ * sys_wait - Suspends calling process until child process terminates.
+ *
+ * Parameters:
+ *   child_pid  - PID of specific child to wait for, or -1 for any child.
+ *   status_ptr - Pointer to store child's exit status.
+ *
+ * Returns:
+ *   Child PID on success.
+ *   -SYSCALL_EFAULT on invalid user status pointer.
+ *   -SYSCALL_ECHILD if no eligible child exists.
+ */
+int64_t sys_wait(int64_t child_pid, int64_t *status_ptr) {
+    if (status_ptr == NULL || !syscall_validate_writable_user_buffer(status_ptr, sizeof(int64_t))) {
+        return SYSCALL_EFAULT;
+    }
+
+    return process_wait(child_pid, status_ptr, true);
+}
+
+/*
  * syscall_dispatch - Central system call dispatcher invoked from isr_syscall.
  *
  * Parameters:
@@ -454,6 +474,9 @@ int64_t syscall_dispatch(uint64_t number, uint64_t arg1, uint64_t arg2, uint64_t
 
         case SYS_CLOSE:
             return sys_close((int64_t)arg1);
+
+        case SYS_WAIT:
+            return sys_wait((int64_t)arg1, (int64_t *)arg2);
 
         default:
             return SYSCALL_ENOSYS;

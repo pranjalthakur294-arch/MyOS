@@ -715,18 +715,18 @@ static void builtin_run(const char *args) {
     vga_print_dec(proc->pid);
     vga_putc('\n');
 
-    /* Allow process to execute in Ring 3 under timer-driven scheduler */
-    __asm__ volatile ("sti");
-    uint64_t start_tick = timer_get_ticks();
-    while ((timer_get_ticks() - start_tick) < 200) {
-        if (proc->state == PROCESS_TERMINATED || proc->reaped) {
-            break;
-        }
-        __asm__ volatile ("hlt");
-    }
+    /* Wait for child process termination via blocking process_wait */
+    int64_t status = 0;
+    process_wait((int64_t)proc->pid, &status, false);
+}
 
-    /* Cleanly reap terminated process and return physical frames to PMM */
-    process_reap_terminated();
+/*
+ * Built-in Command: waittest
+ * Executes Stage 13B process lifecycle and wait verification test suite.
+ */
+static void builtin_waittest(const char *args) {
+    (void)args;
+    process_print_lifecycle_status();
 }
 
 /*
@@ -2001,6 +2001,10 @@ void shell_execute(const char *cmd_line) {
     }
     if (kstrcmp(cmd, "vfs12etest") == 0) {
         builtin_vfs12etest(args);
+        return;
+    }
+    if (kstrcmp(cmd, "waittest") == 0) {
+        builtin_waittest(args);
         return;
     }
 

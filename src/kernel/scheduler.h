@@ -25,6 +25,8 @@ void scheduler_enable(void);
 void scheduler_disable(void);
 bool scheduler_is_enabled(void);
 uint64_t scheduler_tick(uint64_t current_rsp);
+uint64_t yield_handler(uint64_t current_rsp);
+void scheduler_yield(void);
 void scheduler_get_stats(scheduler_stats_t *stats);
 void scheduler_print_stats(void);
 bool scheduler_is_demo_complete(void);

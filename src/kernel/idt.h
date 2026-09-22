@@ -39,6 +39,7 @@ struct idt_ptr {
 #define IDT_TIMER_VECTOR        0x20  /* IRQ0: Programmable Interval Timer (PIT) */
 #define IDT_KEYBOARD_VECTOR     0x21  /* IRQ1: PS/2 Keyboard */
 #define IDT_USER_RETURN_VECTOR  0x80  /* Vector 0x80: User Mode Trap Return */
+#define IDT_YIELD_VECTOR        0x81  /* Vector 0x81: Synchronous Kernel Yield */
 
 /* Function prototypes */
 void idt_set_gate(uint8_t vector, void (*handler)(void), uint16_t selector, uint8_t flags);
