@@ -607,7 +607,7 @@ int vfs_read(vfs_node_t *node, void *buffer, uint64_t offset, size_t size, size_
     if (node->type == VFS_NODE_DIRECTORY) {
         return VFS_ERR_IS_DIR;
     }
-    if (node->type != VFS_NODE_FILE) {
+    if (node->type != VFS_NODE_FILE && node->type != VFS_NODE_DEVICE) {
         return VFS_ERR_INVALID;
     }
     if (node->ops == NULL || node->ops->read == NULL) {
@@ -633,7 +633,7 @@ int vfs_write(vfs_node_t *node, const void *buffer, uint64_t offset, size_t size
     if (node->type == VFS_NODE_DIRECTORY) {
         return VFS_ERR_IS_DIR;
     }
-    if (node->type != VFS_NODE_FILE) {
+    if (node->type != VFS_NODE_FILE && node->type != VFS_NODE_DEVICE) {
         return VFS_ERR_INVALID;
     }
     if (node->ops == NULL || node->ops->write == NULL) {
@@ -670,6 +670,8 @@ const char *vfs_strerror(int err) {
             return "Operation not supported";
         case VFS_ERR_IO:
             return "I/O or internal VFS error";
+        case VFS_ERR_BUSY:
+            return "Device or resource busy";
         default:
             return "Unknown error";
     }

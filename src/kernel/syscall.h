@@ -47,6 +47,7 @@
 #define SYSCALL_ENOMEM   -9  /* Out of memory */
 #define SYSCALL_ENOTSUP -10  /* Operation not supported */
 #define SYSCALL_ECHILD  -11  /* No child processes / not a child */
+#define SYSCALL_EBUSY   -12  /* Device or resource busy */
 
 /* Canary magic recorded upon successful syscall test suite execution */
 #define SYSCALL_TEST_MAGIC 0x515CA115ULL

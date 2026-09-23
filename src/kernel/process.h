@@ -62,6 +62,7 @@ typedef struct process {
     bool reaped;                            /* True if physical frames have been reclaimed */
     bool is_elf;                            /* True if process was loaded from an ELF executable */
     bool is_orphan;                         /* True if reparented to PID 0 upon parent termination */
+    open_file_t stdio_files[3];             /* Pre-allocated standard stream open-file objects (Stage 14A) */
     open_file_t *fds[MAX_PROCESS_FDS];      /* Per-process file descriptor table (Stage 11B) */
     vfs_node_t *cwd;                        /* Current working directory (Stage 11E) */
 } process_t;

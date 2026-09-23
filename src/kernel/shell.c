@@ -17,6 +17,7 @@
 #include "block.h"
 #include "pfs.h"
 #include "mount.h"
+#include "terminal.h"
 #include <stddef.h>
 
 /*
@@ -727,6 +728,122 @@ static void builtin_run(const char *args) {
 static void builtin_waittest(const char *args) {
     (void)args;
     process_print_lifecycle_status();
+}
+
+/*
+ * Built-in Command: stdiotest
+ * Executes Stage 14A Standard Streams & Terminal I/O Verification Suite.
+ */
+static void builtin_stdiotest(const char *args) {
+    (void)args;
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("Running Stage 14A Standard Streams & Terminal I/O tests...\n");
+
+    /* 1. Terminal VFS node presence and characteristics */
+    vfs_node_t *term_node = terminal_get_vfs_node();
+    if (!term_node || term_node->type != VFS_NODE_DEVICE || term_node->ops == NULL ||
+        term_node->ops->read == NULL || term_node->ops->write == NULL) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Terminal VFS node invalid\n");
+        return;
+    }
+    vga_puts("[OK] Terminal VFS node and device operations\n");
+
+    /* 2. Process table slot 0 standard streams */
+    process_t *kproc = process_get(0);
+    if (!kproc || !kproc->fds[0] || !kproc->fds[1] || !kproc->fds[2]) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Kernel process standard streams missing\n");
+        return;
+    }
+    if (!(kproc->fds[0]->flags & O_RDONLY) || !(kproc->fds[1]->flags & O_WRONLY) || !(kproc->fds[2]->flags & O_WRONLY)) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Standard streams flags incorrect\n");
+        return;
+    }
+    vga_puts("[OK] Kernel process standard stream descriptors\n");
+
+    /* 3. Independent descriptor ownership and reference counting */
+    uint32_t baseline_ref = term_node->ref_count;
+    process_t temp_proc;
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
+        temp_proc.fds[i] = NULL;
+    }
+    fd_init_process(&temp_proc);
+
+    if (term_node->ref_count != baseline_ref + 3) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Terminal refcount not incremented by 3\n");
+        return;
+    }
+    if (temp_proc.fds[1] == temp_proc.fds[2]) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] stdout and stderr share same open_file object\n");
+        return;
+    }
+
+    /* 4. Independent close: close(1) leaves fd 2 valid */
+    int c1 = fd_close(&temp_proc, 1);
+    if (c1 != 0 || temp_proc.fds[1] != NULL || temp_proc.fds[2] == NULL) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] close(1) did not isolate fd 1\n");
+        return;
+    }
+    if (term_node->ref_count != baseline_ref + 2) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Terminal refcount not decremented by 1 after close(1)\n");
+        return;
+    }
+    if (fd_close(&temp_proc, 1) != SYSCALL_EBADF) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Double close did not return EBADF\n");
+        return;
+    }
+    if (fd_write(&temp_proc, 1, "test", 4) != SYSCALL_EBADF) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Write to closed fd did not return EBADF\n");
+        return;
+    }
+    vga_puts("[OK] Independent FD close and EBADF isolation\n");
+
+    /* 5. Permission enforcement: write to stdin and read from stderr */
+    if (fd_write(&temp_proc, 0, "test", 4) != SYSCALL_EACCES) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Write to stdin did not return EACCES\n");
+        return;
+    }
+    char tmp_buf[16];
+    if (fd_read(&temp_proc, 2, tmp_buf, 4) != SYSCALL_EACCES) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Read from stderr did not return EACCES\n");
+        return;
+    }
+    vga_puts("[OK] Permission enforcement (EACCES on write-to-stdin/read-from-stderr)\n");
+
+    /* 6. Clean teardown and reference restoration */
+    fd_close_all(&temp_proc);
+    if (term_node->ref_count != baseline_ref) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Terminal refcount leak after fd_close_all\n");
+        return;
+    }
+    vga_puts("[OK] Clean teardown and reference count restoration\n");
+
+    /* 7. Syscall buffer validation */
+    if (sys_read(-1, (void *)USER_STACK_VADDR, 4) != SYSCALL_EBADF ||
+        sys_read(99, (void *)USER_STACK_VADDR, 4) != SYSCALL_EBADF ||
+        sys_read(0, NULL, 4) != SYSCALL_EFAULT ||
+        sys_read(0, (void *)0x100000, 4) != SYSCALL_EFAULT ||
+        sys_read(0, (void *)USER_CODE_VADDR, 4) != SYSCALL_EFAULT ||
+        sys_read(0, (void *)USER_STACK_VADDR, 0) != 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_read validation check failed\n");
+        return;
+    }
+    vga_puts("[OK] sys_read security boundary and buffer validation\n");
+
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("All Stage 14A stdio kernel tests passed successfully!\n");
 }
 
 /*
@@ -2005,6 +2122,10 @@ void shell_execute(const char *cmd_line) {
     }
     if (kstrcmp(cmd, "waittest") == 0) {
         builtin_waittest(args);
+        return;
+    }
+    if (kstrcmp(cmd, "stdiotest") == 0) {
+        builtin_stdiotest(args);
         return;
     }
 

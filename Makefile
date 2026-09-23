@@ -76,7 +76,17 @@ USER_EXIT42_OBJS   := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/exit42.o
 USER_DELAYED_BIN   := $(BUILD_DIR)/user/delayed_exit.elf
 USER_DELAYED_OBJS  := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/delayed_exit.o
 
-USER_TEST_BINS     := $(USER_HELLO_BIN) $(USER_EXIT0_BIN) $(USER_EXIT42_BIN) $(USER_DELAYED_BIN)
+USER_WRITE_TEST_BIN := $(BUILD_DIR)/user/write_test.elf
+USER_WRITE_TEST_OBJS := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/write_test.o
+
+USER_READ_TEST_BIN  := $(BUILD_DIR)/user/read_test.elf
+USER_READ_TEST_OBJS := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/read_test.o
+
+USER_IO_TEST_BIN    := $(BUILD_DIR)/user/io_test.elf
+USER_IO_TEST_OBJS   := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/io_test.o
+
+USER_TEST_BINS     := $(USER_HELLO_BIN) $(USER_EXIT0_BIN) $(USER_EXIT42_BIN) $(USER_DELAYED_BIN) \
+                      $(USER_WRITE_TEST_BIN) $(USER_READ_TEST_BIN) $(USER_IO_TEST_BIN)
 
 # Raw Test Disk Image (32 MiB)
 DISK_IMG     := $(BUILD_DIR)/disk.img
@@ -122,6 +132,21 @@ $(USER_DELAYED_BIN): $(USER_DELAYED_OBJS) $(USER_DIR)/linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_DELAYED_OBJS)
 	@echo "[SUCCESS] User delayed_exit ELF binary created at $@"
+
+$(USER_WRITE_TEST_BIN): $(USER_WRITE_TEST_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_WRITE_TEST_OBJS)
+	@echo "[SUCCESS] User write_test ELF binary created at $@"
+
+$(USER_READ_TEST_BIN): $(USER_READ_TEST_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_READ_TEST_OBJS)
+	@echo "[SUCCESS] User read_test ELF binary created at $@"
+
+$(USER_IO_TEST_BIN): $(USER_IO_TEST_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_IO_TEST_OBJS)
+	@echo "[SUCCESS] User io_test ELF binary created at $@"
 
 
 # Ensure embedded ELF assembly depends on the compiled user binary

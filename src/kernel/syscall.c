@@ -326,6 +326,9 @@ int64_t sys_write(int64_t fd_or_buf, const void *buf_or_len, size_t count_or_zer
 
     process_t *curr = process_current();
     if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
         return SYSCALL_EFAULT;
     }
 
@@ -336,11 +339,6 @@ int64_t sys_write(int64_t fd_or_buf, const void *buf_or_len, size_t count_or_zer
  * sys_open - Open a file by VFS path with specified access mode.
  */
 int64_t sys_open(const char *user_path, uint64_t flags) {
-    process_t *curr = process_current();
-    if (!curr) {
-        return SYSCALL_EFAULT;
-    }
-
     if (user_path == NULL) {
         return SYSCALL_EFAULT;
     }
@@ -351,6 +349,14 @@ int64_t sys_open(const char *user_path, uint64_t flags) {
         return (int64_t)copy_res;
     }
 
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
     return (int64_t)fd_open(curr, kernel_path, (uint32_t)flags);
 }
 
@@ -358,11 +364,6 @@ int64_t sys_open(const char *user_path, uint64_t flags) {
  * sys_read - Read from an open file descriptor into user buffer.
  */
 int64_t sys_read(int64_t fd, void *user_buf, size_t count) {
-    process_t *curr = process_current();
-    if (!curr) {
-        return SYSCALL_EFAULT;
-    }
-
     if (fd < 0 || fd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
     }
@@ -384,6 +385,14 @@ int64_t sys_read(int64_t fd, void *user_buf, size_t count) {
         return SYSCALL_EFAULT;
     }
 
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
     return fd_read(curr, (int)fd, user_buf, count);
 }
 
@@ -391,13 +400,16 @@ int64_t sys_read(int64_t fd, void *user_buf, size_t count) {
  * sys_close - Close an open file descriptor.
  */
 int64_t sys_close(int64_t fd) {
-    process_t *curr = process_current();
-    if (!curr) {
-        return SYSCALL_EFAULT;
-    }
-
     if (fd < 0 || fd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
     }
 
     return (int64_t)fd_close(curr, (int)fd);

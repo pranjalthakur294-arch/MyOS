@@ -520,6 +520,34 @@
     - In-kernel test command `waittest` exercising 11 lifecycle properties (zombie state, wait status collection, double wait rejection, non-child rejection, pointer fault defense, multi-child collection, reparenting, zero memory leaks).
     - Comprehensive test suite `test_stage13b.py` covering all 26 verification checks.
 
+- **Stage 14A: User Process I/O & Standard Streams**
+  - Architectural Pipeline (`User Program -> syscall -> process FD table -> open_file -> VFS node -> terminal`):
+    - Completely eliminates console bypasses: standard streams route strictly through the VFS node operations table (`ops->read`, `ops->write`).
+    - Every created process initializes standard descriptors: `fd 0` = stdin (`O_RDONLY`), `fd 1` = stdout (`O_WRONLY`), `fd 2` = stderr (`O_WRONLY`).
+    - Standard streams use pre-allocated static `open_file_t stdio_files[3]` embedded directly within `struct process`, guaranteeing zero heap allocations during process creation and maintaining the `Used: 0 bytes` heap baseline.
+  - Independent Descriptor Lifecycle:
+    - `stdout` (fd 1) and `stderr` (fd 2) reference distinct `open_file_t` instances: closing fd 1 leaves fd 2 open and writable without side-effects.
+    - Double close and operations on closed descriptors return `-SYSCALL_EBADF` (-4).
+    - Read/write access permissions strictly enforced: writing to fd 0 or reading from fd 1/fd 2 returns `-SYSCALL_EACCES` (-6).
+    - Clean process teardown: `fd_close_all()` releases all VFS node references, cleanly returning the terminal node `ref_count` to baseline.
+  - Terminal VFS Node & Line-Discipline Integration (`src/kernel/terminal.h`, `src/kernel/terminal.c`):
+    - Concrete VFS device node (`terminal_node`, `type = VFS_NODE_DEVICE`, `name = "console"`).
+    - Writes render characters to the VGA display via `terminal_vfs_write()`.
+    - Reads consume canonical lines from `term_ready_buf` via `terminal_vfs_read()`.
+    - When a process calls `terminal_read()` and no submitted line is available, the process transitions to `PROCESS_BLOCKED` and its task to `TASK_BLOCKED`, yielding CPU via `scheduler_yield()` under `cli` with lost-wakeup protection.
+    - Deterministic single-active-reader policy: concurrent read by another process is rejected with `-SYSCALL_EBUSY` (-12).
+    - Active reader safely unlinked and reset via `terminal_cancel_reader()` if a process exits while blocked.
+  - User Memory Validation for Syscalls:
+    - `sys_read()` validates user destination buffers with `syscall_validate_writable_user_buffer()`: rejecting NULL, kernel-space pointers, and read-only pages (e.g., user code segments) with `-SYSCALL_EFAULT` (-2).
+    - Zero-length read and write operations return 0 immediately.
+  - Freestanding User-Mode Programs on Disk (`build/disk.img`):
+    - `/bin/write_test`: Ring 3 program verifying stdout (fd 1) and stderr (fd 2) output.
+    - `/bin/read_test`: Ring 3 program verifying non-busy blocking terminal read, keyboard wake-up, and echo.
+    - `/bin/io_test`: Ring 3 test suite verifying 20 comprehensive user-mode I/O assertions.
+  - In-Kernel & Automated Verification:
+    - Built-in shell command `stdiotest`: 7-part kernel test verifying terminal VFS node, descriptor flags, independent close, permission enforcement, clean teardown/refcount restoration, and buffer validation.
+    - `test_stage14a.py`: Comprehensive automated test suite passing all 24 verification checks.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -704,4 +732,5 @@ make run
 ```bash
 python3 test_stage13a.py
 python3 test_stage13b.py
+python3 test_stage14a.py
 ```

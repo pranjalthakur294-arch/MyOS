@@ -10,55 +10,23 @@
 #include "heap.h"
 #include "vga.h"
 #include "user.h"
+#include "terminal.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-
-/*
- * Static Console Stream Objects (stdin, stdout, stderr)
- * Pre-allocated to avoid consuming heap memory at boot or process creation.
- */
-static open_file_t console_stdin = {
-    .type = OPEN_FILE_CONSOLE,
-    .node = NULL,
-    .offset = 0,
-    .flags = O_RDONLY,
-    .refcount = 1,
-    .is_static = true
-};
-
-static open_file_t console_stdout = {
-    .type = OPEN_FILE_CONSOLE,
-    .node = NULL,
-    .offset = 0,
-    .flags = O_WRONLY,
-    .refcount = 1,
-    .is_static = true
-};
-
-static open_file_t console_stderr = {
-    .type = OPEN_FILE_CONSOLE,
-    .node = NULL,
-    .offset = 0,
-    .flags = O_WRONLY,
-    .refcount = 1,
-    .is_static = true
-};
 
 /*
  * file_init - Initializes the file descriptor subsystem.
  * Quiet initialization (0 screen rows) to preserve screen line budget.
  */
 void file_init(void) {
-    /* Confirm static console stream objects are ready */
-    console_stdin.refcount = 1;
-    console_stdout.refcount = 1;
-    console_stderr.refcount = 1;
+    /* Subsystem ready */
 }
 
 /*
  * fd_init_process - Initializes a process's FD table with standard streams.
  * Sets fds[0] = stdin, fds[1] = stdout, fds[2] = stderr, and fds[3..MAX-1] = NULL.
+ * Each standard descriptor owns an independent open-file object backed by the terminal VFS device.
  */
 void fd_init_process(void *proc_ptr) {
     process_t *proc = (process_t *)proc_ptr;
@@ -70,10 +38,37 @@ void fd_init_process(void *proc_ptr) {
         proc->fds[i] = NULL;
     }
 
-    /* Standard streams 0, 1, 2 */
-    proc->fds[0] = &console_stdin;
-    proc->fds[1] = &console_stdout;
-    proc->fds[2] = &console_stderr;
+    vfs_node_t *term_node = terminal_get_vfs_node();
+
+    /* Standard stream 0: stdin (read-only terminal device) */
+    proc->stdio_files[0].type = OPEN_FILE_VFS;
+    proc->stdio_files[0].node = term_node;
+    proc->stdio_files[0].offset = 0;
+    proc->stdio_files[0].flags = O_RDONLY;
+    proc->stdio_files[0].refcount = 1;
+    proc->stdio_files[0].is_static = true;
+    vfs_node_ref(term_node);
+    proc->fds[0] = &proc->stdio_files[0];
+
+    /* Standard stream 1: stdout (write-only terminal device) */
+    proc->stdio_files[1].type = OPEN_FILE_VFS;
+    proc->stdio_files[1].node = term_node;
+    proc->stdio_files[1].offset = 0;
+    proc->stdio_files[1].flags = O_WRONLY;
+    proc->stdio_files[1].refcount = 1;
+    proc->stdio_files[1].is_static = true;
+    vfs_node_ref(term_node);
+    proc->fds[1] = &proc->stdio_files[1];
+
+    /* Standard stream 2: stderr (write-only terminal device) */
+    proc->stdio_files[2].type = OPEN_FILE_VFS;
+    proc->stdio_files[2].node = term_node;
+    proc->stdio_files[2].offset = 0;
+    proc->stdio_files[2].flags = O_WRONLY;
+    proc->stdio_files[2].refcount = 1;
+    proc->stdio_files[2].is_static = true;
+    vfs_node_ref(term_node);
+    proc->fds[2] = &proc->stdio_files[2];
 }
 
 /*
@@ -180,11 +175,6 @@ int64_t fd_read(void *proc_ptr, int fd, void *buf, size_t count) {
         return SYSCALL_EFAULT;
     }
 
-    /* Console stdin stream */
-    if (of->type == OPEN_FILE_CONSOLE) {
-        return 0; /* EOF for educational non-interactive stdin read */
-    }
-
     if (of->type != OPEN_FILE_VFS || !of->node) {
         return SYSCALL_EBADF;
     }
@@ -200,6 +190,8 @@ int64_t fd_read(void *proc_ptr, int fd, void *buf, size_t count) {
         switch (err) {
             case VFS_ERR_IS_DIR:
                 return SYSCALL_EISDIR;
+            case VFS_ERR_BUSY:
+                return SYSCALL_EBUSY;
             default:
                 return SYSCALL_EINVAL;
         }
@@ -238,15 +230,6 @@ int64_t fd_write(void *proc_ptr, int fd, const void *buf, size_t count) {
         return SYSCALL_EFAULT;
     }
 
-    /* Console stdout/stderr stream */
-    if (of->type == OPEN_FILE_CONSOLE) {
-        const char *cbuf = (const char *)buf;
-        for (size_t i = 0; i < count; i++) {
-            vga_putc(cbuf[i]);
-        }
-        return (int64_t)count;
-    }
-
     if (of->type != OPEN_FILE_VFS || !of->node) {
         return SYSCALL_EBADF;
     }
@@ -267,6 +250,8 @@ int64_t fd_write(void *proc_ptr, int fd, const void *buf, size_t count) {
                 return SYSCALL_EISDIR;
             case VFS_ERR_NO_MEM:
                 return SYSCALL_ENOMEM;
+            case VFS_ERR_BUSY:
+                return SYSCALL_EBUSY;
             default:
                 return SYSCALL_EINVAL;
         }
@@ -299,13 +284,15 @@ int fd_close(void *proc_ptr, int fd) {
         of->refcount--;
     }
 
-    /* Free dynamically allocated open_file objects */
-    if (of->refcount == 0 && !of->is_static) {
+    /* Free open_file node reference, and kfree if dynamically allocated */
+    if (of->refcount == 0) {
         if (of->type == OPEN_FILE_VFS && of->node != NULL) {
             vfs_node_unref(of->node);
             of->node = NULL;
         }
-        kfree(of);
+        if (!of->is_static) {
+            kfree(of);
+        }
     }
 
     return SYSCALL_SUCCESS;
@@ -352,12 +339,14 @@ void fd_close_all(void *proc_ptr) {
             if (of->refcount > 0) {
                 of->refcount--;
             }
-            if (of->refcount == 0 && !of->is_static) {
+            if (of->refcount == 0) {
                 if (of->type == OPEN_FILE_VFS && of->node != NULL) {
                     vfs_node_unref(of->node);
                     of->node = NULL;
                 }
-                kfree(of);
+                if (!of->is_static) {
+                    kfree(of);
+                }
             }
         }
     }

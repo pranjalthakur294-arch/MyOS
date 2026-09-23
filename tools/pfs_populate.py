@@ -22,6 +22,9 @@ FILES_TO_POPULATE = [
     ("exit0", "build/user/exit0.elf"),
     ("exit42", "build/user/exit42.elf"),
     ("delayed_exit", "build/user/delayed_exit.elf"),
+    ("write_test", "build/user/write_test.elf"),
+    ("read_test", "build/user/read_test.elf"),
+    ("io_test", "build/user/io_test.elf"),
 ]
 
 PFS_MAGIC = 0x50465331  # 'PFS1'

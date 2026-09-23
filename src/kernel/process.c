@@ -20,6 +20,7 @@
 #include "user.h"
 #include "syscall.h"
 #include "scheduler.h"
+#include "terminal.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -99,7 +100,9 @@ void process_init(void) {
         proc_table[i].reaped = false;
         proc_table[i].is_orphan = false;
         proc_table[i].cwd = NULL;
-        fd_init_process(&proc_table[i]);
+        for (int j = 0; j < MAX_PROCESS_FDS; j++) {
+            proc_table[i].fds[j] = NULL;
+        }
     }
 
     current_process = NULL;
@@ -184,7 +187,8 @@ void process_reap(process_t *proc) {
         return;
     }
 
-    /* 0. Release all process-owned open file descriptors */
+    /* 0. Cancel active terminal reader and release all process-owned open file descriptors */
+    terminal_cancel_reader(proc);
     fd_close_all(proc);
 
     /* 0b. Release current working directory reference */
@@ -433,7 +437,6 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
 
     process_t *proc = &proc_table[slot];
     kmemset(proc, 0, sizeof(process_t));
-    fd_init_process(proc);
 
     /* 2. Allocate user code physical frame */
     uint64_t code_phys = pmm_alloc_frame();
@@ -529,6 +532,7 @@ process_t *process_create(const void *code, size_t code_size, const char *name) 
     proc->is_orphan = false;
     proc->cwd = (caller && caller->cwd) ? caller->cwd : vfs_get_root();
     vfs_node_ref(proc->cwd);
+    fd_init_process(proc);
 
     return proc;
 }
@@ -560,7 +564,8 @@ void process_exit(int64_t status) {
         proc->task->state = TASK_FINISHED;
     }
 
-    /* 4. Release process file descriptors and CWD immediately */
+    /* 4. Release terminal reader, process file descriptors and CWD immediately */
+    terminal_cancel_reader(proc);
     fd_close_all(proc);
     if (proc->cwd != NULL) {
         vfs_node_unref(proc->cwd);

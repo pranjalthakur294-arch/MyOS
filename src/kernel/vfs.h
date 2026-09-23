@@ -36,6 +36,7 @@ typedef enum {
 #define VFS_ERR_PATH_TOO_LONG  -8   /* Absolute path exceeds VFS_PATH_MAX - 1 */
 #define VFS_ERR_NOT_SUPPORTED  -9   /* Operation not supported (e.g. gap writes) */
 #define VFS_ERR_IO            -10   /* Generic I/O or internal error */
+#define VFS_ERR_BUSY          -11   /* Device or resource busy */
 
 /* Forward declarations */
 typedef struct vfs_node vfs_node_t;
