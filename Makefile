@@ -31,7 +31,7 @@ KERNEL_ISO := $(BUILD_DIR)/myos.iso
 # -mcmodel=small: Kernel linked in lower memory addresses (< 2 GiB)
 # -Wall -Wextra: Enable strict compiler diagnostics
 CFLAGS := -std=c99 -ffreestanding -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
-          -fno-pie -no-pie -mcmodel=small -Wall -Wextra -O2 -I$(SRC_DIR)/kernel
+          -fno-pie -no-pie -mcmodel=small -Wall -Wextra -O2 -I$(SRC_DIR)/kernel -Iuser/include
 
 # Linker Flags
 # -nostdlib: Do not link standard C runtime startup or libraries
@@ -65,7 +65,7 @@ USER_LDFLAGS       := -nostdlib -z max-page-size=0x1000 -T $(USER_DIR)/linker.ld
 
 USER_HELLO_BIN     := $(BUILD_DIR)/user/hello.elf
 USER_HELLO_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/hello.o
-USER_HELLO_LDFLAGS := -nostdlib -N -T $(USER_DIR)/linker.ld
+USER_HELLO_LDFLAGS := -nostdlib -s -N -T $(USER_DIR)/linker.ld
 
 USER_EXIT0_BIN     := $(BUILD_DIR)/user/exit0.elf
 USER_EXIT0_OBJS    := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/exit0.o
@@ -85,8 +85,25 @@ USER_READ_TEST_OBJS := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/read_test.o
 USER_IO_TEST_BIN    := $(BUILD_DIR)/user/io_test.elf
 USER_IO_TEST_OBJS   := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/io_test.o
 
+USER_LIB_OBJS       := $(BUILD_DIR)/user/lib/syscall.o \
+                       $(BUILD_DIR)/user/lib/string.o \
+                       $(BUILD_DIR)/user/lib/stdio.o
+
+USER_FILE_TEST_BIN  := $(BUILD_DIR)/user/file_test.elf
+USER_FILE_TEST_OBJS := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/file_test.o $(USER_LIB_OBJS)
+
+USER_LS_BIN         := $(BUILD_DIR)/user/ls.elf
+USER_LS_OBJS        := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/ls.o $(USER_LIB_OBJS)
+
+USER_PWD_BIN        := $(BUILD_DIR)/user/pwd.elf
+USER_PWD_OBJS       := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/pwd.o $(USER_LIB_OBJS)
+
+USER_CD_TEST_BIN    := $(BUILD_DIR)/user/cd_test.elf
+USER_CD_TEST_OBJS   := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/cd_test.o $(USER_LIB_OBJS)
+
 USER_TEST_BINS     := $(USER_HELLO_BIN) $(USER_EXIT0_BIN) $(USER_EXIT42_BIN) $(USER_DELAYED_BIN) \
-                      $(USER_WRITE_TEST_BIN) $(USER_READ_TEST_BIN) $(USER_IO_TEST_BIN)
+                      $(USER_WRITE_TEST_BIN) $(USER_READ_TEST_BIN) $(USER_IO_TEST_BIN) \
+                      $(USER_FILE_TEST_BIN) $(USER_LS_BIN) $(USER_PWD_BIN) $(USER_CD_TEST_BIN)
 
 # Raw Test Disk Image (32 MiB)
 DISK_IMG     := $(BUILD_DIR)/disk.img
@@ -147,6 +164,26 @@ $(USER_IO_TEST_BIN): $(USER_IO_TEST_OBJS) $(USER_DIR)/linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_IO_TEST_OBJS)
 	@echo "[SUCCESS] User io_test ELF binary created at $@"
+
+$(USER_FILE_TEST_BIN): $(USER_FILE_TEST_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_FILE_TEST_OBJS)
+	@echo "[SUCCESS] User file_test ELF binary created at $@"
+
+$(USER_LS_BIN): $(USER_LS_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_LS_OBJS)
+	@echo "[SUCCESS] User ls ELF binary created at $@"
+
+$(USER_PWD_BIN): $(USER_PWD_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_PWD_OBJS)
+	@echo "[SUCCESS] User pwd ELF binary created at $@"
+
+$(USER_CD_TEST_BIN): $(USER_CD_TEST_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_CD_TEST_OBJS)
+	@echo "[SUCCESS] User cd_test ELF binary created at $@"
 
 
 # Ensure embedded ELF assembly depends on the compiled user binary

@@ -25,6 +25,10 @@ FILES_TO_POPULATE = [
     ("write_test", "build/user/write_test.elf"),
     ("read_test", "build/user/read_test.elf"),
     ("io_test", "build/user/io_test.elf"),
+    ("file_test", "build/user/file_test.elf"),
+    ("ls", "build/user/ls.elf"),
+    ("pwd", "build/user/pwd.elf"),
+    ("cd_test", "build/user/cd_test.elf"),
 ]
 
 PFS_MAGIC = 0x50465331  # 'PFS1'
@@ -51,7 +55,6 @@ DATA_START = 82
 def populate_pfs():
     # Read each binary
     file_info = []
-    current_block = 2  # Block 0 is root dir, Block 1 is /bin dir
     next_inode = 3     # Inode 0 reserved, Inode 1 root dir, Inode 2 /bin dir
 
     for name, path in FILES_TO_POPULATE:
@@ -65,18 +68,35 @@ def populate_pfs():
             print(f"Error: {path} is {flen} bytes, exceeding PFS limit of {PFS_DIRECT_BLOCKS * PFS_SECTOR_SIZE} bytes.")
             sys.exit(1)
         b_needed = (flen + PFS_SECTOR_SIZE - 1) // PFS_SECTOR_SIZE
-        direct_blocks = [current_block + i for i in range(b_needed)]
         file_info.append({
             "name": name,
             "inode": next_inode,
             "len": flen,
             "data": data,
             "blocks_needed": b_needed,
-            "direct": direct_blocks,
-            "start_block": current_block,
         })
-        current_block += b_needed
         next_inode += 1
+
+    # Directory entries setup
+    root_entries = [(2, PFS_ENTRY_DIR, "bin")] + [
+        (info["inode"], PFS_ENTRY_FILE, info["name"]) for info in file_info
+    ]
+    bin_entries = [
+        (info["inode"], PFS_ENTRY_FILE, info["name"]) for info in file_info
+    ]
+
+    ENTRIES_PER_SEC = PFS_SECTOR_SIZE // 64  # 8
+    num_root_blocks = (len(root_entries) + ENTRIES_PER_SEC - 1) // ENTRIES_PER_SEC
+    num_bin_blocks = (len(bin_entries) + ENTRIES_PER_SEC - 1) // ENTRIES_PER_SEC
+
+    root_blocks = list(range(0, num_root_blocks))
+    bin_blocks = list(range(num_root_blocks, num_root_blocks + num_bin_blocks))
+
+    current_block = num_root_blocks + num_bin_blocks
+    for info in file_info:
+        info["start_block"] = current_block
+        info["direct"] = [current_block + i for i in range(info["blocks_needed"])]
+        current_block += info["blocks_needed"]
 
     used_blocks = current_block
     used_inodes = next_inode
@@ -139,10 +159,10 @@ def populate_pfs():
     it_data[0:64] = b"\x00" * 64
 
     # Inode 1: Root directory
-    it_data[64:128] = pack_inode(1, PFS_INODE_DIR, PFS_SECTOR_SIZE, [0])
+    it_data[64:128] = pack_inode(1, PFS_INODE_DIR, num_root_blocks * PFS_SECTOR_SIZE, root_blocks)
 
     # Inode 2: /bin directory
-    it_data[128:192] = pack_inode(2, PFS_INODE_DIR, PFS_SECTOR_SIZE, [1])
+    it_data[128:192] = pack_inode(2, PFS_INODE_DIR, num_bin_blocks * PFS_SECTOR_SIZE, bin_blocks)
 
     # File Inodes
     for info in file_info:
@@ -157,25 +177,15 @@ def populate_pfs():
         name_pad = name_bytes + b"\x00" * (32 - len(name_bytes))
         return struct.pack("<IBBH32s24s", inode, itype, len(name_bytes), 0, name_pad, b"\x00" * 24)
 
-    # Block 0: Root directory data
-    root_dir_data = bytearray(PFS_SECTOR_SIZE)
-    # Entry 0: "bin"
-    root_dir_data[0:64] = pack_dirent(2, PFS_ENTRY_DIR, "bin")
-    entry_idx = 1
-    for info in file_info:
-        root_dir_data[entry_idx * 64:(entry_idx + 1) * 64] = pack_dirent(
-            info["inode"], PFS_ENTRY_FILE, info["name"]
-        )
-        entry_idx += 1
+    # Root directory data
+    root_dir_data = bytearray(num_root_blocks * PFS_SECTOR_SIZE)
+    for idx, (ino, etype, name) in enumerate(root_entries):
+        root_dir_data[idx * 64:(idx + 1) * 64] = pack_dirent(ino, etype, name)
 
-    # Block 1: /bin directory data
-    bin_dir_data = bytearray(PFS_SECTOR_SIZE)
-    entry_idx = 0
-    for info in file_info:
-        bin_dir_data[entry_idx * 64:(entry_idx + 1) * 64] = pack_dirent(
-            info["inode"], PFS_ENTRY_FILE, info["name"]
-        )
-        entry_idx += 1
+    # /bin directory data
+    bin_dir_data = bytearray(num_bin_blocks * PFS_SECTOR_SIZE)
+    for idx, (ino, etype, name) in enumerate(bin_entries):
+        bin_dir_data[idx * 64:(idx + 1) * 64] = pack_dirent(ino, etype, name)
 
     # Write everything to disk image
     with open(DISK_IMG, "r+b") as f:
@@ -195,12 +205,12 @@ def populate_pfs():
         f.seek(18 * PFS_SECTOR_SIZE)
         f.write(it_data)
 
-        # Sector 82: Root directory data (Block 0)
+        # Root directory data
         f.seek(DATA_START * PFS_SECTOR_SIZE)
         f.write(root_dir_data)
 
-        # Sector 83: /bin directory data (Block 1)
-        f.seek((DATA_START + 1) * PFS_SECTOR_SIZE)
+        # /bin directory data
+        f.seek((DATA_START + num_root_blocks) * PFS_SECTOR_SIZE)
         f.write(bin_dir_data)
 
         # File Data Blocks

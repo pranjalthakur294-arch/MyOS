@@ -548,6 +548,32 @@
     - Built-in shell command `stdiotest`: 7-part kernel test verifying terminal VFS node, descriptor flags, independent close, permission enforcement, clean teardown/refcount restoration, and buffer validation.
     - `test_stage14a.py`: Comprehensive automated test suite passing all 24 verification checks.
 
+- **Stage 14B: Userland Runtime & Filesystem Syscalls**
+  - Architectural Pipeline (`User Program -> Userland Runtime -> Syscall Interface -> Process FD Table -> Open File -> VFS -> Filesystem -> Block Device`):
+    - Real, unprivileged Ring 3 interaction with the filesystem strictly through system calls via `int $0x80`.
+    - User programs never directly access kernel VFS functions, structures, or kernel pointers.
+  - Userland C Runtime Library:
+    - Freestanding C headers in `user/include/`: `syscall.h`, `unistd.h`, `dirent.h`, `string.h`, `stdio.h`.
+    - Freestanding implementations in `user/lib/`:
+      - `syscall.c`: low-level wrappers `__syscall0`..`__syscall3` (`int $0x80`) and standard wrappers `read`, `write`, `open`, `close`, `readdir`, `chdir`, `getcwd`, `wait`, `gettime`, `exit`.
+      - `string.c`: `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `memcpy`, `memset`.
+      - `stdio.c`: `print`, `puts`, `print_err`, `print_dec`, `print_hex`.
+  - Kernel Syscalls Implemented / Extended:
+    - `SYS_OPEN` (3): Opens files/directories with flags `O_RDONLY`, `O_WRONLY`, `O_RDWR`, returns lowest available FD >= 3.
+    - `SYS_READDIR` (7): `sys_readdir(fd, dirp)` iterates directory entries via `fd_readdir()`, returning 1 on entry, 0 on EOF, -ENOTDIR on non-directory, -EBADF on invalid FD. User `struct dirent` exposes zero kernel pointers.
+    - `SYS_CHDIR` (8): `sys_chdir(path)` safely copies user path, validates directory type, and updates process CWD via `process_set_cwd()`. Returns -ENOTDIR on files, -ENOENT on non-existent paths, -EFAULT on kernel pointers.
+    - `SYS_GETCWD` (9): `sys_getcwd(buf, size)` reconstructs canonical CWD path, validates writable user buffer, and enforces buffer capacity, returning -ERANGE if capacity is insufficient and -EFAULT on invalid pointers.
+  - Multi-Block PFS Directory Storage (`tools/pfs_populate.py`):
+    - Extended PFS disk image populator to support dynamically allocated multi-block directory structures for root and `/bin` directories, allowing more than 8 entries per directory.
+  - Userland Programs on Disk:
+    - `user/file_test.c`: opens `/readme.txt`, reads contents to stdout, closes file, tests error handling (-ENOENT, -EBADF), prints `"file_test: all assertions passed\n"`, exits 0.
+    - `user/ls.c`: opens current directory `"."`, iterates entries via `readdir()`, formats and outputs `[DIR]`/`[FILE]`, closes directory, exits 0.
+    - `user/pwd.c`: calls `getcwd()`, outputs working directory to stdout, exits 0.
+    - `user/cd_test.c`: tests `getcwd` initial `/`, `chdir("/disk")`, relative `chdir("bin")`, parent `chdir("..")`, non-existent directory rejection, file rejection (-ENOTDIR), small buffer rejection (-ERANGE), prints `"cd_test: all assertions passed\n"`, exits 0.
+  - In-Kernel & Automated Verification:
+    - In-kernel test command `runtimetest` (unlisted to preserve 24-row `help` budget): verifies kernel-side `fd_readdir`, `sys_chdir`, `sys_getcwd`, pointer security defense, buffer bounds, and directory validation.
+    - `test_stage14b.py`: Automated verification suite passing all 26 verification checks.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 
@@ -733,4 +759,5 @@ make run
 python3 test_stage13a.py
 python3 test_stage13b.py
 python3 test_stage14a.py
+python3 test_stage14b.py
 ```

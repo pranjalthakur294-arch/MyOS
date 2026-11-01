@@ -456,6 +456,168 @@ int64_t sys_wait(int64_t child_pid, int64_t *status_ptr) {
 }
 
 /*
+ * sys_readdir - Enumerate next directory entry from an open directory descriptor.
+ *
+ * Parameters:
+ *   fd          - Open directory file descriptor.
+ *   user_dirent - Pointer to user buffer (vfs_dirent_t) to receive entry.
+ *
+ * Returns:
+ *   1 on successful entry read.
+ *   0 on end of directory.
+ *   -EBADF on invalid or closed descriptor.
+ *   -ENOTDIR if descriptor does not refer to a directory.
+ *   -EFAULT on invalid user buffer pointer.
+ */
+int64_t sys_readdir(int64_t fd, void *user_dirent) {
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    if (user_dirent == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (!syscall_validate_writable_user_buffer(user_dirent, sizeof(vfs_dirent_t))) {
+        return SYSCALL_EFAULT;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    vfs_dirent_t kdirent;
+    int res = fd_readdir(curr, (int)fd, &kdirent);
+    if (res == 1) {
+        kmemcpy(user_dirent, &kdirent, sizeof(vfs_dirent_t));
+        return 1;
+    }
+
+    return (int64_t)res;
+}
+
+/*
+ * sys_chdir - Changes the current working directory of the calling process.
+ *
+ * Parameters:
+ *   user_path - Pointer to null-terminated directory path in user memory.
+ *
+ * Returns:
+ *   SYSCALL_SUCCESS (0) on success.
+ *   -EFAULT on invalid user pointer.
+ *   -ENOENT if path does not exist.
+ *   -ENOTDIR if target is not a directory.
+ *   -EINVAL on invalid arguments.
+ */
+int64_t sys_chdir(const char *user_path) {
+    if (user_path == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    char kernel_path[VFS_PATH_MAX];
+    int copy_res = syscall_copy_user_path(user_path, kernel_path, sizeof(kernel_path));
+    if (copy_res != 0) {
+        return (int64_t)copy_res;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    vfs_node_t *cwd = (curr && curr->cwd) ? curr->cwd : vfs_get_root();
+    vfs_node_t *target_node = NULL;
+    int err = vfs_lookup_from(cwd, kernel_path, &target_node);
+    if (err != VFS_OK || target_node == NULL) {
+        switch (err) {
+            case VFS_ERR_NOT_DIR:
+                return SYSCALL_ENOTDIR;
+            case VFS_ERR_NOT_FOUND:
+                return SYSCALL_ENOENT;
+            case VFS_ERR_NAME_TOO_LONG:
+            case VFS_ERR_PATH_TOO_LONG:
+            case VFS_ERR_INVALID:
+                return SYSCALL_EINVAL;
+            default:
+                return SYSCALL_ENOENT;
+        }
+    }
+
+    if (target_node->type != VFS_NODE_DIRECTORY) {
+        return SYSCALL_ENOTDIR;
+    }
+
+    int rc = process_set_cwd(curr, target_node);
+    if (rc != VFS_OK) {
+        return SYSCALL_EINVAL;
+    }
+
+    return SYSCALL_SUCCESS;
+}
+
+/*
+ * sys_getcwd - Copies the canonical absolute path of process CWD into user buffer.
+ *
+ * Parameters:
+ *   user_buf - Pointer to user buffer.
+ *   size     - Buffer capacity in bytes.
+ *
+ * Returns:
+ *   Length of path string (including null terminator) on success (>= 0).
+ *   -EFAULT on invalid user pointer.
+ *   -EINVAL on size == 0.
+ *   -ERANGE if user buffer capacity is insufficient.
+ */
+int64_t sys_getcwd(char *user_buf, size_t size) {
+    if (user_buf == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (size == 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    if (!syscall_validate_writable_user_buffer(user_buf, size)) {
+        return SYSCALL_EFAULT;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    vfs_node_t *cwd = (curr && curr->cwd) ? curr->cwd : vfs_get_root();
+    char kpath[VFS_PATH_MAX];
+    int err = vfs_get_path(cwd, kpath, sizeof(kpath));
+    if (err != VFS_OK) {
+        return SYSCALL_EINVAL;
+    }
+
+    size_t path_len = 0;
+    while (kpath[path_len] != '\0' && path_len < sizeof(kpath)) {
+        path_len++;
+    }
+    size_t req_len = path_len + 1;
+
+    if (size < req_len) {
+        return SYSCALL_ERANGE;
+    }
+
+    kmemcpy(user_buf, kpath, req_len);
+    return (int64_t)req_len;
+}
+
+/*
  * syscall_dispatch - Central system call dispatcher invoked from isr_syscall.
  *
  * Parameters:
@@ -489,6 +651,15 @@ int64_t syscall_dispatch(uint64_t number, uint64_t arg1, uint64_t arg2, uint64_t
 
         case SYS_WAIT:
             return sys_wait((int64_t)arg1, (int64_t *)arg2);
+
+        case SYS_READDIR:
+            return sys_readdir((int64_t)arg1, (void *)arg2);
+
+        case SYS_CHDIR:
+            return sys_chdir((const char *)arg1);
+
+        case SYS_GETCWD:
+            return sys_getcwd((char *)arg1, (size_t)arg2);
 
         default:
             return SYSCALL_ENOSYS;

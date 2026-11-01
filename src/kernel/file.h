@@ -53,6 +53,7 @@ int64_t fd_read(void *proc_ptr, int fd, void *buf, size_t count);
 int64_t fd_write(void *proc_ptr, int fd, const void *buf, size_t count);
 int fd_close(void *proc_ptr, int fd);
 int64_t fd_get_size(void *proc_ptr, int fd);
+int fd_readdir(void *proc_ptr, int fd, vfs_dirent_t *dirent);
 void fd_close_all(void *proc_ptr);
 int fd_run_tests(void);
 

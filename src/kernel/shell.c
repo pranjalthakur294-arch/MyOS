@@ -50,6 +50,12 @@ static int kstrncmp(const char *s1, const char *s2, size_t n) {
     return 0;
 }
 
+static void kstrcpy(char *dest, const char *src) {
+    if (!dest || !src) return;
+    while ((*dest++ = *src++) != '\0') {
+    }
+}
+
 /*
  * Shell Command Table Structure
  */
@@ -844,6 +850,139 @@ static void builtin_stdiotest(const char *args) {
 
     vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_puts("All Stage 14A stdio kernel tests passed successfully!\n");
+}
+
+/*
+ * Built-in Command: runtimetest
+ * Executes Stage 14B Filesystem Syscalls & Runtime Verification Suite.
+ */
+static void builtin_runtimetest(const char *args) {
+    (void)args;
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("Running Stage 14B Filesystem Syscalls & Runtime kernel tests...\n");
+
+    process_t *kproc = process_get(0);
+    if (!kproc) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Kernel process not found\n");
+        return;
+    }
+
+    /* 1. Directory Open & readdir on /disk */
+    int dfd = fd_open(kproc, "/disk", O_RDONLY);
+    if (dfd < 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Failed to open /disk\n");
+        return;
+    }
+
+    vfs_dirent_t de;
+    int entry_count = 0;
+    int rc;
+    while ((rc = fd_readdir(kproc, dfd, &de)) > 0) {
+        entry_count++;
+    }
+    if (rc != 0 || entry_count == 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_readdir failed or found no entries\n");
+        fd_close(kproc, dfd);
+        return;
+    }
+    fd_close(kproc, dfd);
+    vga_puts("[OK] fd_readdir on directory /disk\n");
+
+    /* 2. fd_readdir on regular file returns ENOTDIR */
+    int file_fd = fd_open(kproc, "/readme.txt", O_RDONLY);
+    if (file_fd < 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Failed to open /readme.txt\n");
+        return;
+    }
+    if (fd_readdir(kproc, file_fd, &de) != SYSCALL_ENOTDIR) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_readdir on regular file did not return ENOTDIR\n");
+        fd_close(kproc, file_fd);
+        return;
+    }
+    fd_close(kproc, file_fd);
+    vga_puts("[OK] fd_readdir on regular file returns ENOTDIR\n");
+
+    /* 3. fd_readdir on invalid fd returns EBADF */
+    if (fd_readdir(kproc, 99, &de) != SYSCALL_EBADF) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_readdir on invalid fd did not return EBADF\n");
+        return;
+    }
+    vga_puts("[OK] fd_readdir on invalid fd returns EBADF\n");
+
+    /* 4. chdir and getcwd */
+    vfs_node_t *orig_cwd = kproc->cwd;
+
+    /* Verify security: kernel pointers rejected with EFAULT */
+    if (sys_chdir("/disk") != SYSCALL_EFAULT ||
+        sys_chdir((const char *)0x100000) != SYSCALL_EFAULT ||
+        sys_getcwd((char *)0x100000, 64) != SYSCALL_EFAULT ||
+        sys_getcwd(NULL, 64) != SYSCALL_EFAULT) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_chdir/getcwd security validation failed\n");
+        return;
+    }
+    vga_puts("[OK] sys_chdir/getcwd pointer security (EFAULT on kernel pointers)\n");
+
+    /* Copy path into user memory region */
+    char *user_path_buf = (char *)USER_STACK_VADDR;
+    kstrcpy(user_path_buf, "/disk");
+
+    if (sys_chdir(user_path_buf) != SYSCALL_SUCCESS) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_chdir to /disk failed\n");
+        return;
+    }
+
+    char *user_cwd_buf = (char *)(USER_STACK_VADDR + 64);
+    int64_t len = sys_getcwd(user_cwd_buf, 64);
+    if (len <= 0 || kstrcmp(user_cwd_buf, "/disk") != 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_getcwd did not return /disk\n");
+        process_set_cwd(kproc, orig_cwd);
+        return;
+    }
+    vga_puts("[OK] sys_chdir & sys_getcwd navigation\n");
+
+    /* 5. sys_getcwd buffer too small returns ERANGE */
+    if (sys_getcwd(user_cwd_buf, 3) != SYSCALL_ERANGE) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_getcwd small buffer did not return ERANGE\n");
+        process_set_cwd(kproc, orig_cwd);
+        return;
+    }
+    vga_puts("[OK] sys_getcwd small buffer returns ERANGE\n");
+
+    /* 6. sys_chdir to file returns ENOTDIR */
+    kstrcpy(user_path_buf, "/readme.txt");
+    if (sys_chdir(user_path_buf) != SYSCALL_ENOTDIR) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_chdir to regular file did not return ENOTDIR\n");
+        process_set_cwd(kproc, orig_cwd);
+        return;
+    }
+    vga_puts("[OK] sys_chdir to regular file returns ENOTDIR\n");
+
+    /* 7. sys_chdir to nonexistent directory returns ENOENT */
+    kstrcpy(user_path_buf, "/nonexistent_dir_xyz");
+    if (sys_chdir(user_path_buf) != SYSCALL_ENOENT) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_chdir to nonexistent dir did not return ENOENT\n");
+        process_set_cwd(kproc, orig_cwd);
+        return;
+    }
+    vga_puts("[OK] sys_chdir to nonexistent dir returns ENOENT\n");
+
+    /* Restore cwd */
+    process_set_cwd(kproc, orig_cwd ? orig_cwd : vfs_get_root());
+
+    vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_puts("All Stage 14B kernel runtime tests passed successfully!\n");
 }
 
 /*
@@ -2126,6 +2265,10 @@ void shell_execute(const char *cmd_line) {
     }
     if (kstrcmp(cmd, "stdiotest") == 0) {
         builtin_stdiotest(args);
+        return;
+    }
+    if (kstrcmp(cmd, "runtimetest") == 0) {
+        builtin_runtimetest(args);
         return;
     }
 

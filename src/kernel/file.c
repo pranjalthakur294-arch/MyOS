@@ -263,6 +263,69 @@ int64_t fd_write(void *proc_ptr, int fd, const void *buf, size_t count) {
 }
 
 /*
+ * fd_readdir - Reads the next directory entry from an open directory descriptor.
+ * Advances the directory cursor (of->offset) upon successful entry read.
+ *
+ * Parameters:
+ *   proc_ptr - Pointer to calling process structure.
+ *   fd       - File descriptor referring to an open directory.
+ *   dirent   - Kernel destination buffer for directory entry.
+ *
+ * Returns:
+ *   1 on successful entry read.
+ *   0 on end of directory (EOF).
+ *   Negative error code on failure.
+ */
+int fd_readdir(void *proc_ptr, int fd, vfs_dirent_t *dirent) {
+    process_t *proc = (process_t *)proc_ptr;
+    if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    open_file_t *of = proc->fds[fd];
+    if (!of) {
+        return SYSCALL_EBADF;
+    }
+
+    if (!dirent) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (of->type != OPEN_FILE_VFS || !of->node) {
+        return SYSCALL_EBADF;
+    }
+
+    /* Reject regular files or devices */
+    if (of->node->type != VFS_NODE_DIRECTORY) {
+        return SYSCALL_ENOTDIR;
+    }
+
+    /* Enforce read permission */
+    if (!(of->flags & O_RDONLY)) {
+        return SYSCALL_EACCES;
+    }
+
+    int rc = vfs_readdir(of->node, of->offset, dirent);
+    if (rc == VFS_EOF) {
+        return 0; /* End of directory reached */
+    }
+    if (rc != VFS_OK) {
+        switch (rc) {
+            case VFS_ERR_NOT_DIR:
+                return SYSCALL_ENOTDIR;
+            case VFS_ERR_INVALID:
+                return SYSCALL_EINVAL;
+            default:
+                return SYSCALL_EINVAL;
+        }
+    }
+
+    /* Advance directory entry cursor */
+    of->offset++;
+    return 1;
+}
+
+/*
  * fd_close - Closes an open file descriptor and frees the open-file object.
  * Clears the FD table slot to allow immediate reuse.
  */
