@@ -23,6 +23,11 @@
 #define O_WRONLY    0x0002
 #define O_RDWR      (O_RDONLY | O_WRONLY)
 
+/* Seek whence modes */
+#define SEEK_SET    0
+#define SEEK_CUR    1
+#define SEEK_END    2
+
 /* Open file object types */
 typedef enum {
     OPEN_FILE_UNUSED = 0,
@@ -51,6 +56,7 @@ void fd_init_process(void *proc_ptr);
 int fd_open(void *proc_ptr, const char *path, uint32_t flags);
 int64_t fd_read(void *proc_ptr, int fd, void *buf, size_t count);
 int64_t fd_write(void *proc_ptr, int fd, const void *buf, size_t count);
+int64_t fd_seek(void *proc_ptr, int fd, int64_t offset, int whence);
 int fd_close(void *proc_ptr, int fd);
 int64_t fd_get_size(void *proc_ptr, int fd);
 int fd_readdir(void *proc_ptr, int fd, vfs_dirent_t *dirent);

@@ -165,6 +165,11 @@ typedef struct {
 /* Maximum ELF executable file size supported in Stage 11C (64 KiB) */
 #define ELF_MAX_EXEC_SIZE                 65536ULL
 
+/* Process Command-Line Argument Limits (Stage 14C) */
+#define PROCESS_MAX_ARGS                  32
+#define PROCESS_MAX_ARG_LEN               128
+#define PROCESS_MAX_ARG_TOTAL             1024
+
 struct process; /* Forward declaration */
 
 /*
@@ -175,11 +180,13 @@ int elf_validate(const void *image, size_t size);
 const char *elf_strerror(int err);
 int elf_load_into_process(struct process *proc, const void *image, size_t size, uint64_t *out_entry);
 struct process *process_create_from_elf(const void *image, size_t size, const char *name);
+struct process *process_create_from_elf_args(const void *image, size_t size, const char *name, int argc, const char *const argv[]);
 
 /*
  * Filesystem-Backed Execution APIs (Stage 11C & Stage 13A)
  */
 int process_exec_path(const char *path, const char *name, struct process **out_proc);
+int process_exec_path_args(const char *path, const char *name, int argc, const char *const argv[], struct process **out_proc);
 int process_create_from_elf_path(const char *path, const char *name, struct process **out_proc);
 int elf_exec_path(const char *path, const char *name, struct process **out_proc);
 

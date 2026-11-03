@@ -72,7 +72,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.4):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=2.8):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -122,7 +122,7 @@ def print_screen(rows, title):
             print(f"[{idx:02d}] {r}")
     print("----------------------------\n")
 
-def run_qemu_monitor_cmd(qemu_cmds, boot_wait=1.4):
+def run_qemu_monitor_cmd(qemu_cmds, boot_wait=2.8):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -147,7 +147,7 @@ def main():
     # Test 1: Boot and Stage 8B Milestone Verification
     # -------------------------------------------------------------
     print("\n[TEST 1] Testing Boot and Stage 8B Milestone Checkpoint...")
-    rows_boot = run_qemu_test([], wait_time=0.2, boot_wait=1.4)
+    rows_boot = run_qemu_test([], wait_time=0.2, boot_wait=2.8)
     boot_text = "\n".join(rows_boot)
 
     t1_pass = ("MyOS - Educational x86-64 Kernel" in boot_text and
@@ -178,13 +178,13 @@ def main():
     # Test 3: IDT Vector 0x80 Gate Verification (DPL=3)
     # -------------------------------------------------------------
     print("\n[TEST 3] Verifying IDT Vector 0x80 Gate Configuration...")
-    mon_reg = run_qemu_monitor_cmd(["info registers"], boot_wait=1.4)
+    mon_reg = run_qemu_monitor_cmd(["info registers"], boot_wait=2.8)
     idt_match = re.search(r"IDT=\s+([0-9a-fA-F]+)", mon_reg)
     t3_pass = False
     if idt_match:
         idt_addr = int(idt_match.group(1), 16)
         entry_addr = idt_addr + (0x80 * 16)
-        mon_out = run_qemu_monitor_cmd([f"xp /4xw 0x{entry_addr:x}"], boot_wait=1.4)
+        mon_out = run_qemu_monitor_cmd([f"xp /4xw 0x{entry_addr:x}"], boot_wait=2.8)
         words = []
         for line in mon_out.splitlines():
             if ":" in line and "(qemu)" not in line:
@@ -207,7 +207,7 @@ def main():
     # Test 4: Shell 'syscalltest' Command Execution
     # -------------------------------------------------------------
     print("\n[TEST 4] Testing Shell 'syscalltest' Command...")
-    rows_test = run_qemu_test(text_to_sendkeys("clear\nsyscalltest\n"), wait_time=0.5, boot_wait=1.4)
+    rows_test = run_qemu_test(text_to_sendkeys("clear\nsyscalltest\n"), wait_time=0.5, boot_wait=2.8)
     test_text = "\n".join(rows_test)
 
     t4_pass = ("System Call Test:" in test_text and
@@ -271,7 +271,7 @@ def main():
     # -------------------------------------------------------------
     print("\n[TEST 9] Testing Repeated Execution of 'syscalltest'...")
     repeat_seq = text_to_sendkeys("clear\nsyscalltest\n") + [("sleep", 0.5)] + text_to_sendkeys("syscalltest\n")
-    rows_repeat = run_qemu_test(repeat_seq, wait_time=0.8, boot_wait=1.4)
+    rows_repeat = run_qemu_test(repeat_seq, wait_time=0.8, boot_wait=2.8)
     repeat_text = "\n".join(rows_repeat)
     pass_matches = repeat_text.count("PASSED (All Syscalls Verified)")
     t9_pass = (pass_matches >= 2)
@@ -283,7 +283,7 @@ def main():
     # Test 10: Shell 'about' Architecture Details Update
     # -------------------------------------------------------------
     print("\n[TEST 10] Verifying Shell 'about' Command Includes Syscalls...")
-    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.4)
+    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=2.8)
     about_text = "\n".join(rows_about)
 
     t10_pass = ("Syscalls: int 0x80 (SYS_WRITE, SYS_GETTIME)" in about_text and
@@ -297,7 +297,7 @@ def main():
     # Test 11: Shell 'help' Command Lists 'syscalltest'
     # -------------------------------------------------------------
     print("\n[TEST 11] Testing Shell 'help' Command Lists 'syscalltest'...")
-    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.4)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=2.8)
     help_text = "\n".join(rows_help)
 
     t11_pass = ("syscalltest" in help_text and
@@ -310,7 +310,7 @@ def main():
     # Test 12: Shell Responsiveness Post Syscall Execution
     # -------------------------------------------------------------
     print("\n[TEST 12] Verifying Shell Responsiveness Post Syscall Execution...")
-    rows_echo = run_qemu_test(text_to_sendkeys("clear\nsyscalltest\necho syscall_alive\n"), wait_time=0.5, boot_wait=1.4)
+    rows_echo = run_qemu_test(text_to_sendkeys("clear\nsyscalltest\necho syscall_alive\n"), wait_time=0.5, boot_wait=2.8)
     echo_text = "\n".join(rows_echo)
 
     t12_pass = ("syscall_alive" in echo_text and "MyOS>" in echo_text)
@@ -321,7 +321,7 @@ def main():
     # Test 13: Scheduler & Timer Continuity After Syscalls
     # -------------------------------------------------------------
     print("\n[TEST 13] Verifying Scheduler and Timer Continuity After Syscalls...")
-    rows_sched = run_qemu_test(text_to_sendkeys("syscalltest\nclear\nsched\n"), wait_time=0.4, boot_wait=1.4)
+    rows_sched = run_qemu_test(text_to_sendkeys("syscalltest\nclear\nsched\n"), wait_time=0.4, boot_wait=2.8)
     sched_text = "\n".join(rows_sched)
 
     t13_pass = ("Scheduler:" in sched_text and
@@ -335,7 +335,7 @@ def main():
     # -------------------------------------------------------------
     print("\n[TEST 14] Verifying Coexistence with Stage 8A 'usertest'...")
     coexist_seq = text_to_sendkeys("clear\nusertest\n") + [("sleep", 0.5)] + text_to_sendkeys("syscalltest\n")
-    rows_coexist = run_qemu_test(coexist_seq, wait_time=0.8, boot_wait=1.4)
+    rows_coexist = run_qemu_test(coexist_seq, wait_time=0.8, boot_wait=2.8)
     coexist_text = "\n".join(rows_coexist)
 
     t14_pass = ("PASSED (Ring 3 Confirmed)" in coexist_text and

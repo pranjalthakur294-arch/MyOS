@@ -36,6 +36,10 @@
 #define SYS_READDIR 7  /* Read directory entry from directory descriptor */
 #define SYS_CHDIR   8  /* Change current working directory */
 #define SYS_GETCWD  9  /* Get current working directory path */
+#define SYS_SEEK    10 /* Reposition file read/write offset */
+#define SYS_STAT    11 /* Get file/directory status and metadata */
+#define SYS_MKDIR   12 /* Create a new directory */
+#define SYS_UNLINK  13 /* Remove a file */
 
 /* System Call Return Error Codes (signed 64-bit) */
 #define SYSCALL_SUCCESS   0
@@ -53,6 +57,9 @@
 #define SYSCALL_EBUSY   -12  /* Device or resource busy */
 #define SYSCALL_ENOTDIR -13  /* Not a directory */
 #define SYSCALL_ERANGE  -14  /* Result too large / buffer too small */
+#define SYSCALL_EEXIST  -15  /* File or directory exists */
+#define SYSCALL_EPERM   -16  /* Operation not permitted */
+#define SYSCALL_EOVERFLOW -17 /* Value too large for defined data type */
 
 /* Canary magic recorded upon successful syscall test suite execution */
 #define SYSCALL_TEST_MAGIC 0x515CA115ULL
@@ -90,6 +97,25 @@ int64_t sys_wait(int64_t child_pid, int64_t *status_ptr);
 int64_t sys_readdir(int64_t fd, void *user_dirent);
 int64_t sys_chdir(const char *user_path);
 int64_t sys_getcwd(char *user_buf, size_t size);
+
+/* User-facing stat structure (40 bytes, fixed width, 8-byte aligned) */
+typedef struct syscall_stat {
+    uint32_t st_dev;        /* Device / filesystem identifier (1 = RAMFS, 2 = PFS) */
+    uint32_t st_ino;        /* Inode number */
+    uint32_t st_mode;       /* File type (1 = FILE, 2 = DIR, 3 = DEV) */
+    uint32_t st_nlink;      /* Number of hard links (1) */
+    uint64_t st_size;       /* Total file size in bytes */
+    uint64_t st_blocks;     /* Number of 512-byte blocks allocated */
+    uint32_t st_flags;      /* Permission / metadata flags */
+    uint32_t _reserved;     /* Explicit alignment padding */
+} syscall_stat_t;
+
+_Static_assert(sizeof(syscall_stat_t) == 40, "syscall_stat_t must be 40 bytes");
+
+int64_t sys_seek(int64_t fd, int64_t offset, int64_t whence);
+int64_t sys_stat(const char *user_path, syscall_stat_t *statbuf);
+int64_t sys_mkdir(const char *user_path);
+int64_t sys_unlink(const char *user_path);
 
 int syscall_run_test(void);
 void syscall_print_status(void);

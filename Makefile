@@ -101,9 +101,22 @@ USER_PWD_OBJS       := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/pwd.o $(USER_
 USER_CD_TEST_BIN    := $(BUILD_DIR)/user/cd_test.elf
 USER_CD_TEST_OBJS   := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/cd_test.o $(USER_LIB_OBJS)
 
+USER_CAT_BIN        := $(BUILD_DIR)/user/cat.elf
+USER_CAT_OBJS       := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/cat.o $(USER_LIB_OBJS)
+
+USER_MKDIR_BIN      := $(BUILD_DIR)/user/mkdir.elf
+USER_MKDIR_OBJS     := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/mkdir.o $(USER_LIB_OBJS)
+
+USER_RM_BIN         := $(BUILD_DIR)/user/rm.elf
+USER_RM_OBJS        := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/rm.o $(USER_LIB_OBJS)
+
+USER_ARGV_TEST_BIN  := $(BUILD_DIR)/user/argv_test.elf
+USER_ARGV_TEST_OBJS := $(BUILD_DIR)/user/start.o $(BUILD_DIR)/user/argv_test.o $(USER_LIB_OBJS)
+
 USER_TEST_BINS     := $(USER_HELLO_BIN) $(USER_EXIT0_BIN) $(USER_EXIT42_BIN) $(USER_DELAYED_BIN) \
                       $(USER_WRITE_TEST_BIN) $(USER_READ_TEST_BIN) $(USER_IO_TEST_BIN) \
-                      $(USER_FILE_TEST_BIN) $(USER_LS_BIN) $(USER_PWD_BIN) $(USER_CD_TEST_BIN)
+                      $(USER_FILE_TEST_BIN) $(USER_LS_BIN) $(USER_PWD_BIN) $(USER_CD_TEST_BIN) \
+                      $(USER_CAT_BIN) $(USER_MKDIR_BIN) $(USER_RM_BIN) $(USER_ARGV_TEST_BIN)
 
 # Raw Test Disk Image (32 MiB)
 DISK_IMG     := $(BUILD_DIR)/disk.img
@@ -184,6 +197,26 @@ $(USER_CD_TEST_BIN): $(USER_CD_TEST_OBJS) $(USER_DIR)/linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_CD_TEST_OBJS)
 	@echo "[SUCCESS] User cd_test ELF binary created at $@"
+
+$(USER_CAT_BIN): $(USER_CAT_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_CAT_OBJS)
+	@echo "[SUCCESS] User cat ELF binary created at $@"
+
+$(USER_MKDIR_BIN): $(USER_MKDIR_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_MKDIR_OBJS)
+	@echo "[SUCCESS] User mkdir ELF binary created at $@"
+
+$(USER_RM_BIN): $(USER_RM_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_RM_OBJS)
+	@echo "[SUCCESS] User rm ELF binary created at $@"
+
+$(USER_ARGV_TEST_BIN): $(USER_ARGV_TEST_OBJS) $(USER_DIR)/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_HELLO_LDFLAGS) -o $@ $(USER_ARGV_TEST_OBJS)
+	@echo "[SUCCESS] User argv_test ELF binary created at $@"
 
 
 # Ensure embedded ELF assembly depends on the compiled user binary

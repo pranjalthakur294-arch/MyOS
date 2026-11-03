@@ -263,6 +263,95 @@ int64_t fd_write(void *proc_ptr, int fd, const void *buf, size_t count) {
 }
 
 /*
+ * fd_seek - Repositions the file read/write cursor of an open file descriptor.
+ *
+ * Parameters:
+ *   proc_ptr - Pointer to calling process structure.
+ *   fd       - File descriptor.
+ *   offset   - Signed byte offset relative to whence.
+ *   whence   - SEEK_SET (0), SEEK_CUR (1), or SEEK_END (2).
+ *
+ * Returns:
+ *   New non-negative file offset on success, or negative error code on failure.
+ */
+int64_t fd_seek(void *proc_ptr, int fd, int64_t offset, int whence) {
+    process_t *proc = (process_t *)proc_ptr;
+    if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    open_file_t *of = proc->fds[fd];
+    if (!of) {
+        return SYSCALL_EBADF;
+    }
+
+    /* Console streams (stdin, stdout, stderr) are not seekable */
+    if (of->type == OPEN_FILE_CONSOLE) {
+        return SYSCALL_EINVAL;
+    }
+
+    if (of->type != OPEN_FILE_VFS || !of->node) {
+        return SYSCALL_EBADF;
+    }
+
+    /* Reject directory seeking */
+    if (of->node->type == VFS_NODE_DIRECTORY) {
+        return SYSCALL_EISDIR;
+    }
+
+    if (of->node->type != VFS_NODE_FILE) {
+        return SYSCALL_EINVAL;
+    }
+
+    int64_t new_offset = 0;
+    if (whence == SEEK_SET) {
+        if (offset < 0) {
+            return SYSCALL_EINVAL;
+        }
+        new_offset = offset;
+    } else if (whence == SEEK_CUR) {
+        /* Check arithmetic bounds with safe unsigned magnitude calculation */
+        if (offset < 0) {
+            uint64_t mag = 0ULL - (uint64_t)offset;
+            if (mag > of->offset) {
+                return SYSCALL_EINVAL; /* Negative resulting offset */
+            }
+            new_offset = (int64_t)(of->offset - mag);
+        } else {
+            uint64_t uoff = (uint64_t)offset;
+            if (of->offset > 0x7FFFFFFFFFFFFFFFULL - uoff) {
+                return SYSCALL_EOVERFLOW; /* Arithmetic overflow */
+            }
+            new_offset = (int64_t)(of->offset + uoff);
+        }
+    } else if (whence == SEEK_END) {
+        uint64_t file_size = of->node->size;
+        if (offset < 0) {
+            uint64_t mag = 0ULL - (uint64_t)offset;
+            if (mag > file_size) {
+                return SYSCALL_EINVAL; /* Negative resulting offset */
+            }
+            new_offset = (int64_t)(file_size - mag);
+        } else {
+            uint64_t uoff = (uint64_t)offset;
+            if (file_size > 0x7FFFFFFFFFFFFFFFULL - uoff) {
+                return SYSCALL_EOVERFLOW; /* Arithmetic overflow */
+            }
+            new_offset = (int64_t)(file_size + uoff);
+        }
+    } else {
+        return SYSCALL_EINVAL; /* Invalid whence */
+    }
+
+    if (new_offset < 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    of->offset = (uint64_t)new_offset;
+    return new_offset;
+}
+
+/*
  * fd_readdir - Reads the next directory entry from an open directory descriptor.
  * Advances the directory cursor (of->offset) upon successful entry read.
  *

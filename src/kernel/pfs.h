@@ -119,6 +119,10 @@ int pfs_read_file(uint32_t inode_num, uint32_t offset, void *buffer, uint32_t le
 int pfs_write_file(uint32_t inode_num, uint32_t offset, const void *buffer, uint32_t length, uint32_t *bytes_written);
 int pfs_unlink(uint32_t parent_inode, const char *name);
 int pfs_readdir_entry(uint32_t dir_inode, uint32_t index, char *out_name, uint8_t *out_type, uint32_t *out_size);
+int pfs_stat_inode(uint32_t ino, uint32_t *out_blocks);
+int pfs_get_inode_blocks(uint32_t ino, uint32_t direct_blocks[PFS_DIRECT_BLOCKS], uint32_t *out_count);
+int pfs_verify_block_freed(uint32_t block);
+int pfs_verify_inode_freed(uint32_t ino);
 
 /* VFS Adapter & Node Operations */
 vfs_node_ops_t *pfs_get_vfs_ops(void);

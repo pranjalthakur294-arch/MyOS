@@ -18,6 +18,10 @@
 #define SYS_READDIR 7
 #define SYS_CHDIR   8
 #define SYS_GETCWD  9
+#define SYS_SEEK    10
+#define SYS_STAT    11
+#define SYS_MKDIR   12
+#define SYS_UNLINK  13
 
 /* Syscall error codes (positive values for user errno-like conventions) */
 #define SUCCESS  0
@@ -35,6 +39,9 @@
 #define EBUSY    12 /* Device or resource busy */
 #define ENOTDIR  13 /* Not a directory */
 #define ERANGE   14 /* Result too large / buffer too small */
+#define EEXIST   15 /* File or directory exists */
+#define EPERM    16 /* Operation not permitted */
+#define EOVERFLOW 17 /* Value too large for defined data type */
 
 int64_t __syscall0(int64_t num);
 int64_t __syscall1(int64_t num, int64_t a1);

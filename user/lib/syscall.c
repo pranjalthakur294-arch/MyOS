@@ -6,6 +6,9 @@
 #include "unistd.h"
 #include "dirent.h"
 
+/* Ensure non-empty .data segment for userland runtime executables */
+volatile uint64_t __user_runtime_magic = 0x595343414C4CULL;
+
 int64_t __syscall0(int64_t num) {
     int64_t ret;
     __asm__ volatile (
@@ -58,12 +61,28 @@ int64_t write(int fd, const void *buf, size_t count) {
     return __syscall3(SYS_WRITE, (int64_t)fd, (int64_t)buf, (int64_t)count);
 }
 
+int64_t seek(int fd, int64_t offset, int whence) {
+    return __syscall3(SYS_SEEK, (int64_t)fd, offset, (int64_t)whence);
+}
+
 int close(int fd) {
     return (int)__syscall1(SYS_CLOSE, (int64_t)fd);
 }
 
 int open(const char *pathname, int flags) {
     return (int)__syscall2(SYS_OPEN, (int64_t)pathname, (int64_t)flags);
+}
+
+int stat(const char *pathname, struct stat *statbuf) {
+    return (int)__syscall2(SYS_STAT, (int64_t)pathname, (int64_t)statbuf);
+}
+
+int mkdir(const char *pathname) {
+    return (int)__syscall1(SYS_MKDIR, (int64_t)pathname);
+}
+
+int unlink(const char *pathname) {
+    return (int)__syscall1(SYS_UNLINK, (int64_t)pathname);
 }
 
 int readdir(int fd, struct dirent *dirp) {

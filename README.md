@@ -574,6 +574,31 @@
     - In-kernel test command `runtimetest` (unlisted to preserve 24-row `help` budget): verifies kernel-side `fd_readdir`, `sys_chdir`, `sys_getcwd`, pointer security defense, buffer bounds, and directory validation.
     - `test_stage14b.py`: Automated verification suite passing all 26 verification checks.
 
+- **Stage 14C: Userland Arguments & Extended Filesystem Operations**
+  - Ring 3 Command-Line Argument Passing:
+    - Shell command `run <path> [args...]` parses arbitrary arguments with full support for single quotes (`'...'`), double quotes (`"..."`), spaces inside quotes, and backslash escaping (`\`). Rejects unterminated quotes, argument counts > 32 (`PROCESS_MAX_ARGS`), and total argument string length > 1024 bytes (`PROCESS_MAX_ARG_TOTAL`).
+    - Arguments are cleanly written into the top of the newly allocated user stack page (`[0x70000000, 0x70001000)`).
+    - Initial stack conforms strictly to the System V AMD64 ABI: `(%rsp)` contains `int argc`, `8(%rsp)` contains `char *argv[0]`, `argv` array is null-terminated (`argv[argc] == NULL`), and `%rsp` is 16-byte aligned before calling user entry point.
+    - Freestanding startup stub (`user/start.S`) extracts `argc` (`%rdi`) and `argv` (`%rsi`), guarantees 16-byte stack alignment, and calls `main(argc, argv)` with weak fallback to `user_main()` for backward compatibility.
+  - Extended Filesystem Syscalls:
+    - `SYS_SEEK` (10): `sys_seek(fd, offset, whence)` with `SEEK_SET (0)`, `SEEK_CUR (1)`, `SEEK_END (2)`. Performs signed arithmetic overflow checks, rejects negative offsets (`-EINVAL`), rejects non-seekable console devices (`-ESPIPE`), and rejects directory seeking (`-EISDIR`).
+    - `SYS_STAT` (11): `sys_stat(path, statbuf)` exposes a fixed-width 40-byte `syscall_stat_t` (`st_dev`, `st_ino`, `st_mode`, `st_nlink`, `st_size`, `st_blocks`, `st_flags`, `_reserved`). Strict validation rejects kernel pointers and unmapped user buffers with `-EFAULT`. Supports relative and absolute paths.
+    - `SYS_MKDIR` (12): `sys_mkdir(path)` creates directories via `vfs_mkdir_from()`. Rejects duplicate paths with `-EEXIST`, validates parents, supports relative paths against process CWD.
+    - `SYS_UNLINK` (13): `sys_unlink(path)` removes files via `vfs_unlink_from()`. Rejects root removal (`-EPERM`), directory removal (`-EISDIR`), and mountpoint removal (`-EBUSY`). Implements open-unlink deferred storage deallocation.
+  - Userland Runtime & Utilities (`user/`):
+    - Runtime library extended in `user/lib/syscall.c` with wrappers `seek()`, `stat()`, `mkdir()`, and `unlink()`. Headers updated in `user/include/syscall.h` and `user/include/unistd.h`.
+    - `user/cat.c`: reads bounded chunks from file and writes to `STDOUT_FILENO`.
+    - `user/mkdir.c`: creates directory at specified path, reports errors.
+    - `user/rm.c`: unlinks file at specified path, reports errors.
+    - `user/argv_test.c`: exercises argument passing by printing `argc`, each `argv[i]`, and checking `argv[argc] == NULL`.
+    - Updated `user/ls.c`: accepts optional target directory from `argv[0]`.
+    - Updated `user/file_test.c`: exercises open, read, write, seek (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, bounds checks), stat (file, dir, missing), and close.
+    - All 15 user executables linked with `-nostdlib -s -N -T user/linker.ld`, strictly under 4096 bytes each, and pre-populated on persistent disk image (`build/disk.img`) at `/` and `/bin/`.
+  - In-Kernel & Automated Verification:
+    - In-kernel test command `runtimetest` (unlisted to preserve 24-row `help` budget): verifies kernel-side seek, stat, mkdir, unlink, and pointer defense.
+    - `test_stage14c.py`: Automated verification suite covering all 39 requirements across 6 test sections.
+    - Full regression suites (Stages 7B through 14B) passing 100% with 0 warnings.
+
 ```text
 Preemptive Timer-Driven Scheduler Architecture:
 

@@ -13,12 +13,19 @@
 
 volatile uint64_t ls_data = 0x55AA55AA12345678ULL;
 
-int64_t user_main(void) {
+int main(int argc, char **argv) {
     (void)ls_data;
 
-    int dfd = open(".", O_RDONLY);
+    const char *target = ".";
+    if (argc > 0 && argv[0] != NULL && argv[0][0] != '\0') {
+        target = argv[0];
+    }
+
+    int dfd = open(target, O_RDONLY);
     if (dfd < 0) {
-        print_err("ls: cannot open current directory\n");
+        print_err("ls: cannot open directory: ");
+        print_err(target);
+        print_err("\n");
         return 1;
     }
 

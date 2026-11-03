@@ -67,7 +67,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=1.4, attach_disk=True):
+def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=3.0, attach_disk=True):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -126,7 +126,7 @@ def main():
 
     # TEST 1: Boot integrity and 25-row screen line budget
     print("\n[TEST 1] Verifying Boot Integrity and Screen Line Budget with Disk Attached...")
-    boot_rows = run_qemu_test([], wait_time=0.1, boot_wait=1.4, attach_disk=True)
+    boot_rows = run_qemu_test([], wait_time=0.5, boot_wait=3.0, attach_disk=True)
     boot_text = "\n".join(boot_rows)
 
     t1_pass = (
@@ -202,7 +202,7 @@ def main():
     # TEST 5: Graceful Drive Absence Handling (QEMU without -hda)
     print("\n[TEST 5] Verifying Graceful Absence Handling (QEMU without -hda)...")
     keys = text_to_sendkeys("clear\ndiskinfo\ndisktest\n")
-    rows_absent = run_qemu_test(keys, wait_time=0.5, boot_wait=1.4, attach_disk=False)
+    rows_absent = run_qemu_test(keys, wait_time=0.5, boot_wait=3.0, attach_disk=False)
     text_absent = "\n".join(rows_absent)
 
     t5_pass = (

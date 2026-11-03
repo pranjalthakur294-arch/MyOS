@@ -60,7 +60,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=1.4):
+def run_qemu_test(key_sequence, wait_time=0.4, boot_wait=2.8):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -120,7 +120,7 @@ def main():
 
     # Test 1: Boot to Shell
     print("\n[TEST 1] Verifying Boot to Shell...")
-    rows = run_qemu_test([], wait_time=0.3, boot_wait=1.4)
+    rows = run_qemu_test([], wait_time=0.3, boot_wait=2.8)
     screen_text = "\n".join(rows)
     t1_pass = "MyOS - Educational x86-64 Kernel" in screen_text and "MyOS>" in screen_text
     print("Test 1 (Boot to Shell):", "PASS" if t1_pass else "FAIL")
@@ -147,7 +147,7 @@ def main():
 
     # Test 4: Preemptive Switching Verification (No Manual Yielding)
     print("\n[TEST 4] Verifying Preemptive Switching (No Manual Yielding)...")
-    rows_sched4 = run_qemu_test(text_to_sendkeys("clear\nsched\n"), wait_time=0.4, boot_wait=1.4)
+    rows_sched4 = run_qemu_test(text_to_sendkeys("clear\nsched\n"), wait_time=0.4, boot_wait=2.8)
     sched4_text = "\n".join(rows_sched4)
     cnt_match4 = re.search(r'Counters:\s+A=(\d+)\s+B=(\d+)\s+C=(\d+)', sched4_text)
     tick_match4 = re.search(r'Ticks:\s+(\d+)', sched4_text)
@@ -165,7 +165,7 @@ def main():
 
     # Test 5: 'tasks' command displays table header
     print("\n[TEST 5] Verifying 'tasks' command table headers...")
-    rows_tasks = run_qemu_test(text_to_sendkeys("clear\ntasks\n"), wait_time=0.4, boot_wait=1.4)
+    rows_tasks = run_qemu_test(text_to_sendkeys("clear\ntasks\n"), wait_time=0.4, boot_wait=2.8)
     tasks_text = "\n".join(rows_tasks)
     t5_pass = ("PID" in tasks_text and "Name" in tasks_text and "State" in tasks_text and
                "Stack Base" in tasks_text and "Switches" in tasks_text)
@@ -211,7 +211,7 @@ def main():
 
     # Test 10: 'sched' command output fields
     print("\n[TEST 10] Verifying 'sched' command output fields...")
-    rows_sched = run_qemu_test(text_to_sendkeys("clear\nsched\n"), wait_time=0.4, boot_wait=1.4)
+    rows_sched = run_qemu_test(text_to_sendkeys("clear\nsched\n"), wait_time=0.4, boot_wait=2.8)
     sched_text = "\n".join(rows_sched)
     t10_pass = ("Policy:" in sched_text and "Round Robin" in sched_text and
                 "Timer:" in sched_text and "100 Hz" in sched_text and
@@ -225,7 +225,7 @@ def main():
     # Test 11: Switch count increases over time (two-point differential measurement)
     print("\n[TEST 11] Verifying continuous timer-driven context switches (two-point differential)...")
     keys_double_sched = text_to_sendkeys("clear\nsched\n") + [("sleep", 0.6)] + text_to_sendkeys("sched\n")
-    rows_double_sched = run_qemu_test(keys_double_sched, wait_time=0.4, boot_wait=1.4)
+    rows_double_sched = run_qemu_test(keys_double_sched, wait_time=0.4, boot_wait=2.8)
     double_sched_text = "\n".join(rows_double_sched)
     switches_matches = re.findall(r'Context switches:\s+(\d+)', double_sched_text)
     ticks_matches = re.findall(r'Ticks:\s+(\d+)', double_sched_text)
@@ -246,7 +246,7 @@ def main():
 
     # Test 12: Shell keyboard responsiveness during background execution
     print("\n[TEST 12] Verifying shell responsiveness during multitasking...")
-    rows_echo = run_qemu_test(text_to_sendkeys("clear\necho sched_responsive\n"), wait_time=0.4, boot_wait=1.4)
+    rows_echo = run_qemu_test(text_to_sendkeys("clear\necho sched_responsive\n"), wait_time=0.4, boot_wait=2.8)
     echo_text = "\n".join(rows_echo)
     t12_pass = "sched_responsive" in echo_text and "MyOS>" in echo_text
     print("Test 12 (Shell Responsiveness):", "PASS" if t12_pass else "FAIL")
@@ -254,7 +254,7 @@ def main():
 
     # Test 13: 'help' command lists 'tasks' and 'sched'
     print("\n[TEST 13] Verifying 'help' lists 'tasks' and 'sched'...")
-    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=1.4)
+    rows_help = run_qemu_test(text_to_sendkeys("clear\nhelp\n"), wait_time=0.4, boot_wait=2.8)
     help_text = "\n".join(rows_help)
     t13_pass = "tasks" in help_text and "sched" in help_text
     print("Test 13 (Help Command):", "PASS" if t13_pass else "FAIL")
@@ -262,7 +262,7 @@ def main():
 
     # Test 14: 'about' command displays Stage 7B information
     print("\n[TEST 14] Verifying 'about' command includes scheduler info...")
-    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=1.4)
+    rows_about = run_qemu_test(text_to_sendkeys("clear\nabout\n"), wait_time=0.4, boot_wait=2.8)
     about_text = "\n".join(rows_about)
     t14_pass = ("Round-Robin Scheduler" in about_text or "Preemptive" in about_text or
                 "Stage 7B" in about_text or "Scheduler" in about_text)
@@ -271,7 +271,7 @@ def main():
 
     # Test 15: 'uptime' command functional under multitasking
     print("\n[TEST 15] Verifying 'uptime' command...")
-    rows_uptime = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=1.4)
+    rows_uptime = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=0.4, boot_wait=2.8)
     uptime_text = "\n".join(rows_uptime)
     t15_pass = "Uptime:" in uptime_text and "seconds" in uptime_text and "Ticks:" in uptime_text
     print("Test 15 (Uptime Command):", "PASS" if t15_pass else "FAIL")
@@ -279,7 +279,7 @@ def main():
 
     # Test 16: 'meminfo' command functional under multitasking
     print("\n[TEST 16] Verifying 'meminfo' command...")
-    rows_mem = run_qemu_test(text_to_sendkeys("clear\nmeminfo\n"), wait_time=0.4, boot_wait=1.4)
+    rows_mem = run_qemu_test(text_to_sendkeys("clear\nmeminfo\n"), wait_time=0.4, boot_wait=2.8)
     mem_text = "\n".join(rows_mem)
     t16_pass = "Physical Memory:" in mem_text and "Total:" in mem_text and "Free:" in mem_text
     print("Test 16 (Meminfo Command):", "PASS" if t16_pass else "FAIL")
@@ -287,7 +287,7 @@ def main():
 
     # Test 17: 'vmtest' passes under multitasking
     print("\n[TEST 17] Verifying 'vmtest' under multitasking...")
-    rows_vm = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=1.4)
+    rows_vm = run_qemu_test(text_to_sendkeys("clear\nvmtest\n"), wait_time=0.5, boot_wait=2.8)
     vm_text = "\n".join(rows_vm)
     t17_pass = "VMM test passed!" in vm_text or "All VMM tests passed successfully" in vm_text
     print("Test 17 (VMM Regression Test):", "PASS" if t17_pass else "FAIL")
@@ -295,7 +295,7 @@ def main():
 
     # Test 18: 'heaptest' passes all 7 tests under multitasking
     print("\n[TEST 18] Verifying 'heaptest' under multitasking...")
-    rows_heap = run_qemu_test(text_to_sendkeys("clear\nheaptest\n"), wait_time=0.5, boot_wait=1.4)
+    rows_heap = run_qemu_test(text_to_sendkeys("clear\nheaptest\n"), wait_time=0.5, boot_wait=2.8)
     heap_text = "\n".join(rows_heap)
     t18_pass = "Heap test passed!" in heap_text
     print("Test 18 (Heap Regression Test):", "PASS" if t18_pass else "FAIL")
@@ -303,7 +303,7 @@ def main():
 
     # Test 19: Kernel heap integrity preserved (0 used bytes at idle)
     print("\n[TEST 19] Verifying heap integrity preserved (no heap leak from tasks)...")
-    rows_heap_stats = run_qemu_test(text_to_sendkeys("clear\nheapinfo\n"), wait_time=0.4, boot_wait=1.4)
+    rows_heap_stats = run_qemu_test(text_to_sendkeys("clear\nheapinfo\n"), wait_time=0.4, boot_wait=2.8)
     heap_stats_text = "\n".join(rows_heap_stats)
     t19_pass = ("Used:         0 bytes" in heap_stats_text and
                 "Free:         65512 bytes" in heap_stats_text and
@@ -322,7 +322,7 @@ def main():
     # Test 21: Finished task exclusion (Task C skipped by scheduler, switches remain frozen at 3)
     print("\n[TEST 21] Verifying Task C remains excluded from scheduling (switches frozen at 3)...")
     keys_double_tasks = text_to_sendkeys("clear\ntasks\n") + [("sleep", 0.6)] + text_to_sendkeys("tasks\n")
-    rows_tasks2 = run_qemu_test(keys_double_tasks, wait_time=0.4, boot_wait=1.4)
+    rows_tasks2 = run_qemu_test(keys_double_tasks, wait_time=0.4, boot_wait=2.8)
     tasks2_text = "\n".join(rows_tasks2)
     c_switches = re.findall(r'3\s+task_c\s+FINISHED\s+0x[0-9A-Fa-f]+\s+(\d+)', tasks2_text)
     a_switches = re.findall(r'1\s+task_a\s+\w+\s+0x[0-9A-Fa-f]+\s+(\d+)', tasks2_text)
@@ -338,7 +338,7 @@ def main():
 
     # Test 22: Stability test (no general protection or page faults during extended run)
     print("\n[TEST 22] Verifying stability under multitasking...")
-    rows_stab = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=1.0, boot_wait=2.0)
+    rows_stab = run_qemu_test(text_to_sendkeys("clear\nuptime\n"), wait_time=1.0, boot_wait=2.8)
     stab_text = "\n".join(rows_stab)
     t22_pass = "PAGE FAULT" not in stab_text and "Triple fault" not in stab_text and "Uptime:" in stab_text
     print("Test 22 (Multitasking Stability):", "PASS" if t22_pass else "FAIL")

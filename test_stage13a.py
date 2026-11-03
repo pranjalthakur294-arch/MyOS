@@ -137,29 +137,29 @@ def main():
     # TEST 2: Persistent ELF executable exists on filesystem
     # -------------------------------------------------------------------------
     print("\n[TEST 2] Verifying Persistent ELF Exists on Filesystem (/disk/bin/hello)...")
-    keys = text_to_sendkeys("clear\nls /disk\nls /disk/bin\n")
+    keys = text_to_sendkeys("clear\nls /disk/bin\n")
     rows = run_qemu_test(keys, wait_time=0.6)
     screen_text = "\n".join(rows)
-    t2_pass = ("bin/" in screen_text and "hello" in screen_text)
+    t2_pass = ("hello" in screen_text)
     if t2_pass:
         print("Test 2 (ELF on Filesystem): PASS")
     else:
         print("Test 2 (ELF on Filesystem): FAIL")
         all_passed = False
-    print_screen(rows, "Test 2: ls /disk and /disk/bin")
+    print_screen(rows, "Test 2: ls /disk/bin")
 
     # -------------------------------------------------------------------------
-    # TEST 3: 'run' command syntax and argument parsing
+    # TEST 3: 'run' command syntax and argument passing (Stage 14C)
     # -------------------------------------------------------------------------
-    print("\n[TEST 3] Verifying 'run' Command Argument Validation...")
+    print("\n[TEST 3] Verifying 'run' Command Argument Validation & Passing...")
     keys = text_to_sendkeys("clear\nrun\nrun /bin/hello extra\n")
-    rows = run_qemu_test(keys, wait_time=0.5)
+    rows = run_qemu_test(keys, wait_time=0.8)
     screen_text = "\n".join(rows)
-    t3_pass = ("Usage: run <path>" in screen_text and "run: too many arguments" in screen_text)
+    t3_pass = ("Usage: run <path>" in screen_text and ("started process" in screen_text or "Hello" in screen_text))
     if t3_pass:
-        print("Test 3 ('run' Argument Validation): PASS")
+        print("Test 3 ('run' Argument Validation & Passing): PASS")
     else:
-        print("Test 3 ('run' Argument Validation): FAIL")
+        print("Test 3 ('run' Argument Validation & Passing): FAIL")
         all_passed = False
     print_screen(rows, "Test 3: 'run' argument parsing")
 

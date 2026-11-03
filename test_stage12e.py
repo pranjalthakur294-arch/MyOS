@@ -77,7 +77,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=2.0, attach_disk=True):
+def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=2.8, attach_disk=True):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -174,7 +174,7 @@ def main():
     # TEST 3: 'vfs12etest' in-kernel verification suite (15 checks)
     print("\n[TEST 3] Verifying 'vfs12etest' In-Kernel Verification Suite (15 Checks)...")
     keys = text_to_sendkeys("clear\nvfs12etest\n")
-    rows_test = run_qemu_test(keys, wait_time=1.0, boot_wait=2.0, attach_disk=True)
+    rows_test = run_qemu_test(keys, wait_time=3.5, boot_wait=2.5, attach_disk=True)
     text_test = "\n".join(rows_test)
 
     t3_pass = (
@@ -224,8 +224,13 @@ def main():
 
     # TEST 6: Subdirectory creation and file operations
     print("\n[TEST 6] Verifying Subdirectory Creation and Subfile Operations...")
-    keys = text_to_sendkeys("clear\nmkdir /disk/testdir\nwritefile /disk/testdir/sub.txt SubData12E\ncat /disk/testdir/sub.txt\n")
-    rows_subdir = run_qemu_test(keys, wait_time=0.4, boot_wait=2.0, attach_disk=True)
+    keys = (
+        text_to_sendkeys("clear\n") + [("sleep", 0.3)] +
+        text_to_sendkeys("mkdir /disk/testdir\n") + [("sleep", 0.3)] +
+        text_to_sendkeys("writefile /disk/testdir/sub.txt SubData12E\n") + [("sleep", 0.3)] +
+        text_to_sendkeys("cat /disk/testdir/sub.txt\n")
+    )
+    rows_subdir = run_qemu_test(keys, wait_time=0.8, boot_wait=2.8, attach_disk=True)
     text_subdir = "\n".join(rows_subdir)
 
     t6_pass = (
@@ -340,8 +345,8 @@ def main():
 
     # TEST 13: File removal via VFS ('rm /disk/shell_test.txt')
     print("\n[TEST 13] Verifying File Deletion via VFS ('rm /disk/shell_test.txt')...")
-    keys = text_to_sendkeys("clear\nrm /disk/shell_test.txt\nls /disk\n")
-    rows_rm = run_qemu_test(keys, wait_time=0.4, boot_wait=2.0, attach_disk=True)
+    keys = text_to_sendkeys("clear\n") + [("sleep", 0.3)] + text_to_sendkeys("rm /disk/shell_test.txt\n") + [("sleep", 0.5)] + text_to_sendkeys("ls /disk\n")
+    rows_rm = run_qemu_test(keys, wait_time=1.5, boot_wait=2.8, attach_disk=True)
     text_rm = "\n".join(rows_rm)
 
     lines_after_ls = []

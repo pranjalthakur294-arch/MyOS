@@ -78,6 +78,7 @@ extern process_t *current_process;
 void process_init(void);
 process_t *process_create(const void *code, size_t code_size, const char *name);
 process_t *process_create_from_elf(const void *image, size_t size, const char *name);
+process_t *process_create_from_elf_args(const void *image, size_t size, const char *name, int argc, const char *const argv[]);
 int process_find_free_slot(void);
 void process_reap_orphans(void);
 void process_exit(int64_t status);

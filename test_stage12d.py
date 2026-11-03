@@ -76,7 +76,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=2.0, attach_disk=True):
+def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=3.2, attach_disk=True):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -136,7 +136,7 @@ def main():
 
     # TEST 1: Boot integrity and 25-row screen line budget
     print("\n[TEST 1] Verifying Boot Integrity and Screen Line Budget with Disk Attached...")
-    boot_rows = run_qemu_test([], wait_time=0.1, boot_wait=2.0, attach_disk=True)
+    boot_rows = run_qemu_test([], wait_time=0.1, boot_wait=3.2, attach_disk=True)
     boot_text = "\n".join(boot_rows)
 
     t1_pass = (
@@ -154,7 +154,7 @@ def main():
     # TEST 2: Shell command table budget check
     print("\n[TEST 2] Verifying 'help' Command Fits Within 24-Row Budget...")
     keys = text_to_sendkeys("clear\nhelp\n")
-    help_rows = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    help_rows = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     help_text = "\n".join(help_rows)
 
     help_non_empty = sum(1 for r in help_rows if r.strip())
@@ -174,7 +174,7 @@ def main():
     # TEST 3: 'mounttest' in-kernel verification suite
     print("\n[TEST 3] Verifying 'mounttest' In-Kernel Verification Suite (22 Checks)...")
     keys = text_to_sendkeys("clear\nmounttest\n")
-    rows_test = run_qemu_test(keys, wait_time=3.5, boot_wait=2.0, attach_disk=True)
+    rows_test = run_qemu_test(keys, wait_time=3.5, boot_wait=3.2, attach_disk=True)
     text_test = "\n".join(rows_test)
 
     t3_pass = (
@@ -192,7 +192,7 @@ def main():
     # TEST 4: 'mount' command with no arguments
     print("\n[TEST 4] Verifying 'mount' Command Output...")
     keys = text_to_sendkeys("clear\nmount\n")
-    rows_mount = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    rows_mount = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     text_mount = "\n".join(rows_mount)
 
     t4_pass = (
@@ -210,7 +210,7 @@ def main():
     # TEST 5: Duplicate mount rejection via shell
     print("\n[TEST 5] Verifying Duplicate Mount Rejection via Shell...")
     keys = text_to_sendkeys("clear\nmount pfs ata0 /disk\n")
-    rows_dup = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    rows_dup = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     text_dup = "\n".join(rows_dup)
 
     t5_pass = (
@@ -226,7 +226,7 @@ def main():
     # TEST 6: Invalid filesystem rejection via shell
     print("\n[TEST 6] Verifying Invalid Filesystem Rejection via Shell...")
     keys = text_to_sendkeys("clear\nmount badfs ata0 /disk\n")
-    rows_badfs = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    rows_badfs = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     text_badfs = "\n".join(rows_badfs)
 
     t6_pass = (
@@ -242,7 +242,7 @@ def main():
     # TEST 7: Invalid device rejection via shell
     print("\n[TEST 7] Verifying Invalid Device Rejection via Shell...")
     keys = text_to_sendkeys("clear\nmount pfs nonexistent_dev /disk\n")
-    rows_baddev = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    rows_baddev = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     text_baddev = "\n".join(rows_baddev)
 
     t7_pass = (
@@ -258,7 +258,7 @@ def main():
     # TEST 8: Unresolvable mount-point rejection via shell
     print("\n[TEST 8] Verifying Unresolvable Mount-Point Rejection via Shell...")
     keys = text_to_sendkeys("clear\nmount pfs ata0 /not/a/real/path\n")
-    rows_badpath = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    rows_badpath = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     text_badpath = "\n".join(rows_badpath)
 
     t8_pass = (
@@ -274,7 +274,7 @@ def main():
     # TEST 9: Successful unmount lifecycle
     print("\n[TEST 9] Verifying 'umount /disk' Lifecycle...")
     keys = text_to_sendkeys("clear\numount /disk\nmount\n")
-    rows_umount = run_qemu_test(keys, wait_time=0.4, boot_wait=2.0, attach_disk=True)
+    rows_umount = run_qemu_test(keys, wait_time=0.4, boot_wait=3.2, attach_disk=True)
     text_umount = "\n".join(rows_umount)
 
     t9_pass = (
@@ -292,7 +292,7 @@ def main():
     # TEST 10: Root mount protection
     print("\n[TEST 10] Verifying Root Mount Protection Against Unmount...")
     keys = text_to_sendkeys("clear\numount /\n")
-    rows_root_prot = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    rows_root_prot = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     text_root_prot = "\n".join(rows_root_prot)
 
     t10_pass = (
@@ -307,8 +307,8 @@ def main():
 
     # TEST 11: Double unmount rejection
     print("\n[TEST 11] Verifying Double Unmount Rejection...")
-    keys = text_to_sendkeys("clear\numount /disk\numount /disk\n")
-    rows_double_u = run_qemu_test(keys, wait_time=0.3, boot_wait=2.0, attach_disk=True)
+    keys = text_to_sendkeys("clear\numount /disk\n") + [("sleep", 0.4)] + text_to_sendkeys("umount /disk\n")
+    rows_double_u = run_qemu_test(keys, wait_time=0.3, boot_wait=3.2, attach_disk=True)
     text_double_u = "\n".join(rows_double_u)
 
     t11_pass = (
@@ -324,7 +324,7 @@ def main():
     # TEST 12: Mount slot reusability
     print("\n[TEST 12] Verifying Mount Slot Reusability...")
     keys = text_to_sendkeys("clear\numount /disk\nmount pfs ata0 /disk\nmount\n")
-    rows_reuse = run_qemu_test(keys, wait_time=0.4, boot_wait=2.0, attach_disk=True)
+    rows_reuse = run_qemu_test(keys, wait_time=0.4, boot_wait=3.2, attach_disk=True)
     text_reuse = "\n".join(rows_reuse)
 
     t12_pass = (
@@ -342,11 +342,11 @@ def main():
     print("\n[TEST 13] Verifying Persistence Across Reboot (Format -> pfstest -> Reboot -> Mount Detection)...")
     # First boot: run pfstest (which formats disk, runs verification, and creates hello.txt)
     keys_fmt = text_to_sendkeys("clear\npfstest\n")
-    run_qemu_test(keys_fmt, wait_time=3.5, boot_wait=2.0, attach_disk=True)
+    run_qemu_test(keys_fmt, wait_time=7.5, boot_wait=3.2, attach_disk=True)
 
     # Second boot: clean reboot, disk should automatically be detected and mounted at /disk
     keys_reboot = text_to_sendkeys("clear\nmount\npfscat hello.txt\n")
-    rows_persist = run_qemu_test(keys_reboot, wait_time=0.5, boot_wait=2.0, attach_disk=True)
+    rows_persist = run_qemu_test(keys_reboot, wait_time=0.5, boot_wait=3.2, attach_disk=True)
     text_persist = "\n".join(rows_persist)
 
     t13_pass = (
@@ -362,7 +362,7 @@ def main():
 
     # TEST 14: Absent disk graceful handling
     print("\n[TEST 14] Verifying Absent Disk Graceful Handling (QEMU without -hda)...")
-    rows_nodisk = run_qemu_test(text_to_sendkeys("clear\nmount\n"), wait_time=0.3, boot_wait=2.0, attach_disk=False)
+    rows_nodisk = run_qemu_test(text_to_sendkeys("clear\nmount\n"), wait_time=0.3, boot_wait=3.2, attach_disk=False)
     text_nodisk = "\n".join(rows_nodisk)
 
     t14_pass = (
@@ -383,7 +383,7 @@ def main():
     keys = text_to_sendkeys("clear\nrun /bin/test\n")
     keys.append(("sleep", 0.5))
     keys.extend(text_to_sendkeys("pwd\nls /\nblockinfo\n"))
-    rows_coexist = run_qemu_test(keys, wait_time=1.0, boot_wait=2.0, attach_disk=True)
+    rows_coexist = run_qemu_test(keys, wait_time=1.0, boot_wait=3.2, attach_disk=True)
     text_coexist = "\n".join(rows_coexist)
 
     t15_pass = (

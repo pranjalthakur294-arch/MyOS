@@ -5,6 +5,7 @@
 #include "vga.h"
 #include "file.h"
 #include "process.h"
+#include "syscall.h"
 
 /*
  * Static Kernel Storage for Mount Subsystem
@@ -48,6 +49,17 @@ static void kmemset(void *dest, uint8_t val, size_t n) {
     for (size_t i = 0; i < n; i++) {
         d[i] = val;
     }
+}
+
+static int kmemcmp(const void *s1, const void *s2, size_t n) {
+    const uint8_t *p1 = (const uint8_t *)s1;
+    const uint8_t *p2 = (const uint8_t *)s2;
+    for (size_t i = 0; i < n; i++) {
+        if (p1[i] != p2[i]) {
+            return (int)p1[i] - (int)p2[i];
+        }
+    }
+    return 0;
 }
 
 /*
@@ -1188,38 +1200,128 @@ int vfs12e_run_tests(void) {
         return -15;
     }
 
-    /* Verify unlink-while-open lifetime contract (Stage 11E compliant) */
+    /*
+     * Stage 14C Hardening: Strengthened 13-Step PFS Open-Unlink Lifecycle & Direct Block Bitmap Verification
+     * 1. Record initial free-block and free-inode counters.
+     * 2. Create test file and write known payload allocating >= 2 data blocks.
+     * 3. Identify and retain exact inode and all allocated data block numbers.
+     * 4. Open file and retain descriptor.
+     * 5. Unlink directory entry.
+     * 6. Verify new open fails with ENOENT.
+     * 7. Verify original descriptor reads expected payload (deferred reclamation).
+     * 8. Close final descriptor.
+     * 9. Read actual block bitmap from disk and verify every data-block bit is cleared.
+     * 10. Verify target inode bitmap bit is cleared.
+     * 11. Verify inode table entry is marked free.
+     * 12. Verify free-block and free-inode counters return to original values.
+     * 13. Verify second free attempt is rejected.
+     */
+    const pfs_superblock_t *sb = pfs_get_superblock();
+    uint32_t init_free_blocks = sb->free_blocks;
+    uint32_t init_free_inodes = sb->free_inodes;
+
+    /* Step 1 & 2: Create file and write known payload allocating >= 2 data blocks (700 bytes > 512) */
     vfs_node_t *open_node = NULL;
-    rc = vfs_create("/disk/open.txt", &open_node);
+    rc = vfs_create("/disk/open_unlink.txt", &open_node);
     if (rc != VFS_OK || open_node == NULL) {
-        vga_puts("FAIL (create /disk/open.txt)\n");
+        vga_puts("FAIL (create /disk/open_unlink.txt)\n");
         return -15;
     }
+    char unlink_payload[700];
+    for (size_t i = 0; i < sizeof(unlink_payload); i++) {
+        unlink_payload[i] = (char)('A' + (i % 26));
+    }
+    size_t payload_len = sizeof(unlink_payload);
     size_t obw = 0;
-    vfs_write(open_node, "opentest", 0, 8, &obw);
-    int ofd = fd_open(proc, "/disk/open.txt", O_RDWR);
-    if (ofd < 0) {
-        vga_puts("FAIL (fd_open /disk/open.txt)\n");
+    vfs_write(open_node, unlink_payload, 0, payload_len, &obw);
+    uint32_t target_ino = (uint32_t)(uintptr_t)open_node->internal_data;
+
+    /* Step 3: Identify and retain exact inode and allocated direct block numbers */
+    uint32_t allocated_blocks[PFS_DIRECT_BLOCKS];
+    uint32_t alloc_count = 0;
+    if (pfs_get_inode_blocks(target_ino, allocated_blocks, &alloc_count) != PFS_OK || alloc_count < 2) {
+        vga_puts("FAIL (pfs_get_inode_blocks failed or < 2 blocks allocated)\n");
         return -15;
     }
-    rc = vfs_unlink("/disk/open.txt");
+    if (sb->free_blocks != init_free_blocks - alloc_count || sb->free_inodes != init_free_inodes - 1) {
+        vga_puts("FAIL (block/inode allocation mismatch)\n");
+        return -15;
+    }
+
+    /* Step 4: Open file and retain descriptor */
+    int ofd = fd_open(proc, "/disk/open_unlink.txt", O_RDWR);
+    if (ofd < 0) {
+        vga_puts("FAIL (fd_open /disk/open_unlink.txt)\n");
+        return -15;
+    }
+
+    /* Step 5: Unlink its directory entry */
+    rc = vfs_unlink("/disk/open_unlink.txt");
     if (rc != VFS_OK) {
         fd_close(proc, ofd);
-        vga_puts("FAIL (unlink /disk/open.txt)\n");
+        vga_puts("FAIL (unlink /disk/open_unlink.txt)\n");
         return -15;
     }
-    char obuf[16];
+
+    /* Step 6: Verify new open fails with ENOENT */
+    int new_fd = fd_open(proc, "/disk/open_unlink.txt", O_RDONLY);
+    if (new_fd != SYSCALL_ENOENT) {
+        if (new_fd >= 0) {
+            fd_close(proc, new_fd);
+        }
+        fd_close(proc, ofd);
+        vga_puts("FAIL (new open after unlink did not return ENOENT)\n");
+        return -15;
+    }
+
+    /* Step 7: Read known contents through existing descriptor */
+    char obuf[768];
     kmemset(obuf, 0, sizeof(obuf));
-    int64_t onr = fd_read(proc, ofd, obuf, 8);
-    if (onr != 8 || kstrcmp(obuf, "opentest") != 0) {
+    int64_t onr = fd_read(proc, ofd, obuf, sizeof(obuf));
+    if (onr != (int64_t)payload_len || kmemcmp(obuf, unlink_payload, payload_len) != 0) {
         fd_close(proc, ofd);
         vga_puts("FAIL (read through unlinked open FD)\n");
         return -15;
     }
-    fd_close(proc, ofd);
+
+    /* Verify deferred reclamation: while open, storage has NOT been freed */
+    if (sb->free_blocks != init_free_blocks - alloc_count || sb->free_inodes != init_free_inodes - 1) {
+        fd_close(proc, ofd);
+        vga_puts("FAIL (premature reclamation while open FD exists)\n");
+        return -15;
+    }
+
+    /* Step 8: Close final descriptor */
+    rc = fd_close(proc, ofd);
+    if (rc != 0) {
+        vga_puts("FAIL (fd_close final descriptor)\n");
+        return -15;
+    }
+
+    /* Step 9: Read actual block bitmap from disk and verify every data-block bit is cleared */
+    for (uint32_t b = 0; b < alloc_count; b++) {
+        if (pfs_verify_block_freed(allocated_blocks[b]) != PFS_OK) {
+            vga_puts("FAIL (data-block bitmap bit not cleared on disk)\n");
+            return -15;
+        }
+    }
+
+    /* Step 10, 11, 13: Verify inode bitmap bit cleared, table entry marked free, and second free rejected */
+    rc = pfs_verify_inode_freed(target_ino);
+    if (rc != PFS_OK) {
+        vga_puts("FAIL (bitmap consistency or double-free verification failed)\n");
+        return -15;
+    }
+
+    /* Step 12: Verify free-block and free-inode counters return to their original values */
+    if (sb->free_blocks != init_free_blocks || sb->free_inodes != init_free_inodes) {
+        vga_puts("FAIL (storage was not reclaimed upon closing descriptor)\n");
+        return -15;
+    }
+
     vfs_node_t *chk_node = NULL;
-    if (vfs_lookup("/disk/open.txt", &chk_node) != VFS_ERR_NOT_FOUND) {
-        vga_puts("FAIL (open.txt still found after close)\n");
+    if (vfs_lookup("/disk/open_unlink.txt", &chk_node) != VFS_ERR_NOT_FOUND) {
+        vga_puts("FAIL (open_unlink.txt still found after close)\n");
         return -15;
     }
     vga_puts("PASS\n");

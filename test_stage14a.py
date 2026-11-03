@@ -282,9 +282,9 @@ def main():
     # -------------------------------------------------------------------------
     print("\n[TEST 6] Verifying PID Reuse & Process Slot Recovery after I/O Processes...")
     keys = (text_to_sendkeys("clear\nrun /bin/write_test\n") +
-            [("sleep", 0.8)] +
+            [("sleep", 1.0)] +
             text_to_sendkeys("run /bin/write_test\n") +
-            [("sleep", 0.8)] +
+            [("sleep", 1.0)] +
             text_to_sendkeys("ps\n"))
     rows = run_qemu_test(keys, wait_time=1.5)
     screen_text = "\n".join(rows)

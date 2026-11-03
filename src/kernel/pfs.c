@@ -325,11 +325,16 @@ static int pfs_free_inode(uint32_t ino) {
         }
     }
 
-    /* Clear inode table entry */
-    kmemset(&inode, 0, sizeof(pfs_inode_t));
-    inode.ino = 0;
-    inode.type = PFS_INODE_FREE;
-    pfs_write_inode(&inode);
+    /* Clear inode table entry on disk */
+    uint32_t sec_offset = (ino * (uint32_t)sizeof(pfs_inode_t)) / PFS_SECTOR_SIZE;
+    uint32_t byte_offset = (ino * (uint32_t)sizeof(pfs_inode_t)) % PFS_SECTOR_SIZE;
+    uint32_t phys_sec = s_pfs_sb.inode_table_start + sec_offset;
+
+    rc = block_read(s_pfs_dev, phys_sec, s_pfs_inode_buf);
+    if (rc == BLOCK_OK) {
+        kmemset(s_pfs_inode_buf + byte_offset, 0, sizeof(pfs_inode_t));
+        block_write(s_pfs_dev, phys_sec, s_pfs_inode_buf);
+    }
 
     /* Clear bit in inode bitmap */
     rc = block_read(s_pfs_dev, s_pfs_sb.inode_bitmap_start, s_pfs_bitmap_buf);
@@ -1211,6 +1216,116 @@ int pfs_readdir_entry(uint32_t dir_inode, uint32_t index, char *out_name, uint8_
     }
 
     return PFS_ERR_NOT_FOUND; /* Indicates EOF */
+}
+
+/*
+ * pfs_stat_inode - Reads an on-disk inode and calculates exact allocated direct block count.
+ */
+int pfs_stat_inode(uint32_t ino, uint32_t *out_blocks) {
+    if (!s_pfs_mounted || out_blocks == NULL) {
+        return PFS_ERR_INVALID;
+    }
+    pfs_inode_t inode;
+    int rc = pfs_read_inode(ino, &inode);
+    if (rc != PFS_OK) {
+        return rc;
+    }
+    uint32_t count = 0;
+    for (int i = 0; i < PFS_DIRECT_BLOCKS; i++) {
+        if (inode.direct[i] != PFS_NO_BLOCK) {
+            count++;
+        }
+    }
+    *out_blocks = count;
+    return PFS_OK;
+}
+
+/*
+ * pfs_get_inode_blocks - Reads an on-disk inode and retrieves its allocated direct block indices.
+ */
+int pfs_get_inode_blocks(uint32_t ino, uint32_t direct_blocks[PFS_DIRECT_BLOCKS], uint32_t *out_count) {
+    if (!s_pfs_mounted || ino <= PFS_ROOT_INODE || ino >= s_pfs_sb.inode_count ||
+        direct_blocks == NULL || out_count == NULL) {
+        return PFS_ERR_INVALID;
+    }
+    pfs_inode_t inode;
+    int rc = pfs_read_inode(ino, &inode);
+    if (rc != PFS_OK) {
+        return rc;
+    }
+    uint32_t count = 0;
+    for (int i = 0; i < PFS_DIRECT_BLOCKS; i++) {
+        direct_blocks[i] = inode.direct[i];
+        if (inode.direct[i] != PFS_NO_BLOCK) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return PFS_OK;
+}
+
+/*
+ * pfs_verify_block_freed - Reads the on-disk block bitmap sector and verifies that
+ * the bit corresponding to 'block' is cleared (0).
+ */
+int pfs_verify_block_freed(uint32_t block) {
+    if (!s_pfs_mounted || block >= s_pfs_sb.data_blocks) {
+        return PFS_ERR_RANGE;
+    }
+    uint32_t s = block / 4096;
+    uint32_t bit = block % 4096;
+    uint32_t phys_sec = s_pfs_sb.block_bitmap_start + s;
+
+    uint8_t sec_buf[PFS_SECTOR_SIZE];
+    int rc = block_read(s_pfs_dev, phys_sec, sec_buf);
+    if (rc != BLOCK_OK) {
+        return PFS_ERR_IO;
+    }
+    if (bitmap_test(sec_buf, bit)) {
+        return PFS_ERR_EXIST; /* Block bit is still set (1 = allocated) */
+    }
+    return PFS_OK; /* Block bit is 0 (freed) */
+}
+
+/*
+ * pfs_verify_inode_freed - Verifies that an inode is completely deallocated:
+ * 1. Its inode bitmap bit is cleared (0) on disk.
+ * 2. Its on-disk inode table entry is zeroed and marked PFS_INODE_FREE.
+ * 3. A second free attempt is safely rejected with PFS_ERR_INVALID.
+ */
+int pfs_verify_inode_freed(uint32_t ino) {
+    if (!s_pfs_mounted || ino <= PFS_ROOT_INODE || ino >= s_pfs_sb.inode_count) {
+        return PFS_ERR_INVALID;
+    }
+    /* 1. Read inode bitmap sector and check bit */
+    int rc = block_read(s_pfs_dev, s_pfs_sb.inode_bitmap_start, s_pfs_bitmap_buf);
+    if (rc != BLOCK_OK) {
+        return PFS_ERR_IO;
+    }
+    if (bitmap_test(s_pfs_bitmap_buf, ino)) {
+        return PFS_ERR_EXIST; /* Inode bit is still set: not reclaimed! */
+    }
+
+    /* 2. Verify on-disk inode table entry is zeroed and marked PFS_INODE_FREE */
+    uint32_t sec_offset = (ino * (uint32_t)sizeof(pfs_inode_t)) / PFS_SECTOR_SIZE;
+    uint32_t byte_offset = (ino * (uint32_t)sizeof(pfs_inode_t)) % PFS_SECTOR_SIZE;
+    uint32_t phys_sec = s_pfs_sb.inode_table_start + sec_offset;
+    uint8_t ino_sec[PFS_SECTOR_SIZE];
+    rc = block_read(s_pfs_dev, phys_sec, ino_sec);
+    if (rc != BLOCK_OK) {
+        return PFS_ERR_IO;
+    }
+    const pfs_inode_t *raw_inode = (const pfs_inode_t *)(ino_sec + byte_offset);
+    if (raw_inode->type != PFS_INODE_FREE || raw_inode->ino != 0) {
+        return PFS_ERR_CORRUPT; /* Inode table entry not marked free */
+    }
+
+    /* 3. Double-free attempt must return PFS_ERR_INVALID */
+    if (pfs_free_inode(ino) != PFS_ERR_INVALID) {
+        return PFS_ERR_CORRUPT; /* Double free was not rejected! */
+    }
+
+    return PFS_OK;
 }
 
 static int pfs_vfs_read(vfs_node_t *node, void *buffer, uint64_t offset, size_t size, size_t *bytes_read);

@@ -15,6 +15,7 @@
 #include "elf.h"
 #include "file.h"
 #include "vfs.h"
+#include "pfs.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -31,6 +32,14 @@ static void kmemset(void *dest, uint8_t val, size_t n) {
     for (size_t i = 0; i < n; i++) {
         d[i] = val;
     }
+}
+
+static int kstrcmp(const char *s1, const char *s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char *)s1 - *(const unsigned char *)s2;
 }
 
 /*
@@ -618,6 +627,266 @@ int64_t sys_getcwd(char *user_buf, size_t size) {
 }
 
 /*
+ * sys_seek - Repositions read/write file offset for an open descriptor.
+ *
+ * Parameters:
+ *   fd     - File descriptor
+ *   offset - Signed byte offset
+ *   whence - SEEK_SET, SEEK_CUR, or SEEK_END
+ *
+ * Returns:
+ *   New resulting offset on success, or negative error code.
+ */
+int64_t sys_seek(int64_t fd, int64_t offset, int64_t whence) {
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    return fd_seek(curr, (int)fd, offset, (int)whence);
+}
+
+/*
+ * sys_stat - Retrieves file or directory metadata from a path.
+ *
+ * Parameters:
+ *   user_path - User virtual address of path string
+ *   statbuf   - User virtual address of destination stat structure
+ *
+ * Returns:
+ *   0 on success, or negative error code.
+ */
+int64_t sys_stat(const char *user_path, syscall_stat_t *statbuf) {
+    if (user_path == NULL || statbuf == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    char kernel_path[VFS_PATH_MAX];
+    int copy_res = syscall_copy_user_path(user_path, kernel_path, sizeof(kernel_path));
+    if (copy_res != 0) {
+        return (int64_t)copy_res;
+    }
+
+    if (!syscall_validate_writable_user_buffer(statbuf, sizeof(syscall_stat_t))) {
+        return SYSCALL_EFAULT;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    vfs_node_t *start_node = (kernel_path[0] == '/') ? vfs_get_root() :
+                             ((curr && curr->cwd) ? curr->cwd : vfs_get_root());
+
+    vfs_node_t *target_node = NULL;
+    int err = vfs_lookup_from(start_node, kernel_path, &target_node);
+    if (err != VFS_OK || target_node == NULL) {
+        switch (err) {
+            case VFS_ERR_NOT_FOUND:
+                return SYSCALL_ENOENT;
+            case VFS_ERR_NOT_DIR:
+                return SYSCALL_ENOTDIR;
+            case VFS_ERR_NAME_TOO_LONG:
+            case VFS_ERR_PATH_TOO_LONG:
+            case VFS_ERR_INVALID:
+                return SYSCALL_EINVAL;
+            default:
+                return SYSCALL_ENOENT;
+        }
+    }
+
+    syscall_stat_t kst;
+    kmemset(&kst, 0, sizeof(syscall_stat_t));
+
+    kst.st_mode = (uint32_t)target_node->type; /* 1 = FILE, 2 = DIR, 3 = DEV */
+    kst.st_size = target_node->size;
+    kst.st_flags = target_node->permissions;
+    /*
+     * Invariants for st_nlink:
+     * Neither PFS nor RAMFS supports hard links; all nodes have a single directory
+     * parent reference. Therefore, st_nlink is strictly 1 for all files and directories.
+     */
+    kst.st_nlink = 1;
+
+    if (target_node->fs && target_node->fs->name && kstrcmp(target_node->fs->name, "pfs") == 0) {
+        kst.st_dev = 2; /* PFS */
+        uint32_t ino = (uint32_t)(uintptr_t)target_node->internal_data;
+        kst.st_ino = ino;
+        uint32_t allocated_blocks = 0;
+        if (pfs_stat_inode(ino, &allocated_blocks) == PFS_OK) {
+            kst.st_blocks = (uint64_t)allocated_blocks;
+        } else {
+            kst.st_blocks = (target_node->size + 511) / 512;
+        }
+    } else {
+        kst.st_dev = 1; /* RAMFS */
+        kst.st_ino = 0;
+        /*
+         * RAMFS allocation semantics:
+         * RAMFS files and directories reside in memory buffers and do not allocate
+         * 512-byte disk sectors. st_blocks reports equivalent 512-byte storage units.
+         */
+        kst.st_blocks = (target_node->size + 511) / 512;
+    }
+
+    kmemcpy(statbuf, &kst, sizeof(syscall_stat_t));
+    return SYSCALL_SUCCESS;
+}
+
+/*
+ * sys_mkdir - Creates a new directory at the specified path.
+ *
+ * Parameters:
+ *   user_path - Pointer to null-terminated directory path in user memory.
+ *
+ * Returns:
+ *   0 on success, or negative error code.
+ */
+int64_t sys_mkdir(const char *user_path) {
+    if (user_path == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    char kernel_path[VFS_PATH_MAX];
+    int copy_res = syscall_copy_user_path(user_path, kernel_path, sizeof(kernel_path));
+    if (copy_res != 0) {
+        return (int64_t)copy_res;
+    }
+
+    if (kernel_path[0] == '\0') {
+        return SYSCALL_ENOENT;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    vfs_node_t *start_node = (kernel_path[0] == '/') ? vfs_get_root() :
+                             ((curr && curr->cwd) ? curr->cwd : vfs_get_root());
+
+    vfs_node_t *new_node = NULL;
+    int err = vfs_mkdir_from(start_node, kernel_path, &new_node);
+    if (err != VFS_OK) {
+        switch (err) {
+            case VFS_ERR_EXISTS:
+                return SYSCALL_EEXIST;
+            case VFS_ERR_NOT_FOUND:
+                return SYSCALL_ENOENT;
+            case VFS_ERR_NOT_DIR:
+                return SYSCALL_ENOTDIR;
+            case VFS_ERR_NO_MEM:
+                return SYSCALL_ENOMEM;
+            case VFS_ERR_NOT_SUPPORTED:
+                return SYSCALL_ENOTSUP;
+            default:
+                return SYSCALL_EINVAL;
+        }
+    }
+
+    return SYSCALL_SUCCESS;
+}
+
+/*
+ * sys_unlink - Removes a regular file from the filesystem.
+ *
+ * Parameters:
+ *   user_path - Pointer to null-terminated file path in user memory.
+ *
+ * Returns:
+ *   0 on success, or negative error code.
+ */
+int64_t sys_unlink(const char *user_path) {
+    if (user_path == NULL) {
+        return SYSCALL_EFAULT;
+    }
+
+    char kernel_path[VFS_PATH_MAX];
+    int copy_res = syscall_copy_user_path(user_path, kernel_path, sizeof(kernel_path));
+    if (copy_res != 0) {
+        return (int64_t)copy_res;
+    }
+
+    if (kernel_path[0] == '\0') {
+        return SYSCALL_ENOENT;
+    }
+
+    /* Reject removing root directory "/" */
+    if (kstrcmp(kernel_path, "/") == 0) {
+        return SYSCALL_EPERM;
+    }
+
+    process_t *curr = process_current();
+    if (!curr) {
+        curr = process_get(0);
+    }
+    if (!curr) {
+        return SYSCALL_EFAULT;
+    }
+
+    vfs_node_t *start_node = (kernel_path[0] == '/') ? vfs_get_root() :
+                             ((curr && curr->cwd) ? curr->cwd : vfs_get_root());
+
+    /* Check target node before unlinking */
+    vfs_node_t *target_node = NULL;
+    int lookup_err = vfs_lookup_from(start_node, kernel_path, &target_node);
+    if (lookup_err != VFS_OK || target_node == NULL) {
+        switch (lookup_err) {
+            case VFS_ERR_NOT_FOUND:
+                return SYSCALL_ENOENT;
+            case VFS_ERR_NOT_DIR:
+                return SYSCALL_ENOTDIR;
+            default:
+                return SYSCALL_ENOENT;
+        }
+    }
+
+    /* Reject directory removal through unlink */
+    if (target_node->type == VFS_NODE_DIRECTORY) {
+        return SYSCALL_EISDIR;
+    }
+
+    /* Reject mountpoint removal */
+    if (target_node == vfs_get_root() || (target_node->fs && target_node->fs->root == target_node)) {
+        return SYSCALL_EBUSY;
+    }
+
+    int err = vfs_unlink_from(start_node, kernel_path);
+    if (err != VFS_OK) {
+        switch (err) {
+            case VFS_ERR_NOT_FOUND:
+                return SYSCALL_ENOENT;
+            case VFS_ERR_IS_DIR:
+                return SYSCALL_EISDIR;
+            case VFS_ERR_NOT_DIR:
+                return SYSCALL_ENOTDIR;
+            case VFS_ERR_BUSY:
+                return SYSCALL_EBUSY;
+            case VFS_ERR_NOT_SUPPORTED:
+                return SYSCALL_ENOTSUP;
+            default:
+                return SYSCALL_EINVAL;
+        }
+    }
+
+    return SYSCALL_SUCCESS;
+}
+
+/*
  * syscall_dispatch - Central system call dispatcher invoked from isr_syscall.
  *
  * Parameters:
@@ -660,6 +929,18 @@ int64_t syscall_dispatch(uint64_t number, uint64_t arg1, uint64_t arg2, uint64_t
 
         case SYS_GETCWD:
             return sys_getcwd((char *)arg1, (size_t)arg2);
+
+        case SYS_SEEK:
+            return sys_seek((int64_t)arg1, (int64_t)arg2, (int64_t)arg3);
+
+        case SYS_STAT:
+            return sys_stat((const char *)arg1, (syscall_stat_t *)arg2);
+
+        case SYS_MKDIR:
+            return sys_mkdir((const char *)arg1);
+
+        case SYS_UNLINK:
+            return sys_unlink((const char *)arg1);
 
         default:
             return SYSCALL_ENOSYS;

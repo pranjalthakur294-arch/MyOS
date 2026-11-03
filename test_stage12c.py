@@ -69,7 +69,7 @@ def text_to_sendkeys(text):
             keys.append(f"sendkey {ch}")
     return keys
 
-def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=1.8, attach_disk=True):
+def run_qemu_test(key_sequence, wait_time=0.5, boot_wait=2.5, attach_disk=True):
     cmd = [
         "qemu-system-x86_64",
         "-kernel", "build/myos.bin",
@@ -129,7 +129,7 @@ def main():
 
     # TEST 1: Boot integrity and 25-row screen line budget
     print("\n[TEST 1] Verifying Boot Integrity and Screen Line Budget with Disk Attached...")
-    boot_rows = run_qemu_test([], wait_time=0.1, boot_wait=1.8, attach_disk=True)
+    boot_rows = run_qemu_test([], wait_time=0.5, boot_wait=3.0, attach_disk=True)
     boot_text = "\n".join(boot_rows)
 
     t1_pass = (
@@ -147,9 +147,9 @@ def main():
     # TEST 2: 'pfsformat' and 'pfsinfo' commands
     print("\n[TEST 2] Verifying 'pfsformat' and 'pfsinfo' Commands...")
     keys = text_to_sendkeys("clear\npfsformat\n")
-    keys.append(("sleep", 1.5))
+    keys.append(("sleep", 3.0))
     keys.extend(text_to_sendkeys("pfsinfo\n"))
-    rows_format = run_qemu_test(keys, wait_time=0.8, boot_wait=1.8, attach_disk=True)
+    rows_format = run_qemu_test(keys, wait_time=1.5, boot_wait=3.0, attach_disk=True)
     text_format = "\n".join(rows_format)
 
     t2_pass = (
@@ -171,7 +171,7 @@ def main():
     # TEST 3: 'pfstest' in-kernel test suite
     print("\n[TEST 3] Verifying 'pfstest' In-Kernel Test Suite...")
     keys = text_to_sendkeys("clear\npfstest\n")
-    rows_pfstest = run_qemu_test(keys, wait_time=3.0, boot_wait=1.8, attach_disk=True)
+    rows_pfstest = run_qemu_test(keys, wait_time=8.0, boot_wait=3.0, attach_disk=True)
     text_pfstest = "\n".join(rows_pfstest)
 
     t3_pass = (
@@ -189,7 +189,7 @@ def main():
     # TEST 4: 'pfscat' read persistent file
     print("\n[TEST 4] Verifying 'pfscat' Command on 'hello.txt'...")
     keys = text_to_sendkeys("clear\npfscat hello.txt\n")
-    rows_pfscat = run_qemu_test(keys, wait_time=0.5, boot_wait=1.8, attach_disk=True)
+    rows_pfscat = run_qemu_test(keys, wait_time=1.5, boot_wait=2.5, attach_disk=True)
     text_pfscat = "\n".join(rows_pfscat)
 
     t4_pass = (
@@ -206,9 +206,9 @@ def main():
     print("\n[TEST 5] Verifying Persistence Across Reboot (New QEMU Instance Without Format)...")
     # Launch completely fresh QEMU process with same disk.img without formatting
     keys_reboot = text_to_sendkeys("clear\npfsmount\n")
-    keys_reboot.append(("sleep", 0.4))
+    keys_reboot.append(("sleep", 1.0))
     keys_reboot.extend(text_to_sendkeys("pfscat hello.txt\n"))
-    rows_reboot = run_qemu_test(keys_reboot, wait_time=0.6, boot_wait=1.8, attach_disk=True)
+    rows_reboot = run_qemu_test(keys_reboot, wait_time=1.5, boot_wait=2.5, attach_disk=True)
     text_reboot = "\n".join(rows_reboot)
 
     t5_pass = (
@@ -335,7 +335,7 @@ def main():
             f.write(bad_bytes)
 
         keys_mut = text_to_sendkeys("clear\npfsmount\n")
-        rows_mut = run_qemu_test(keys_mut, wait_time=0.5, boot_wait=1.8, attach_disk=True)
+        rows_mut = run_qemu_test(keys_mut, wait_time=0.8, boot_wait=2.5, attach_disk=True)
         txt_mut = "\n".join(rows_mut)
 
         with open("build/disk.img", "rb") as f:

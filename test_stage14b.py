@@ -308,8 +308,8 @@ def main():
     # Requirement 11, 12, 19, 20, 21, 26: In-Kernel Runtime & Syscall Tests (runtimetest)
     # ---------------------------------------------------------
     print("\n[REQ 11, 12, 19, 20, 21, 26] Testing in-kernel runtime & syscall suite (runtimetest)...")
-    keys = text_to_sendkeys("runtimetest\n")
-    screen = run_qemu_test(keys, wait_time=0.8)
+    keys = text_to_sendkeys("clear\nruntimetest\n")
+    screen = run_qemu_test(keys, wait_time=2.8)
     print_screen(screen, "runtimetest")
 
     screen_text = "\n".join(screen)
@@ -404,7 +404,13 @@ def main():
     # Verify Process Table Cleanliness (ps)
     # ---------------------------------------------------------
     print("\n[VERIFY] Verifying Process Table Cleanliness (ps)...")
-    keys = text_to_sendkeys("run /disk/file_test\nrun /disk/cd_test\nps\n")
+    keys = (
+        text_to_sendkeys("run /disk/file_test\n")
+        + [("sleep", 0.8)]
+        + text_to_sendkeys("run /disk/cd_test\n")
+        + [("sleep", 0.8)]
+        + text_to_sendkeys("ps\n")
+    )
     screen = run_qemu_test(keys, wait_time=1.0)
     print_screen(screen, "ps after runs")
     ps_text = "\n".join(screen)

@@ -56,6 +56,24 @@ static void kstrcpy(char *dest, const char *src) {
     }
 }
 
+static void kmemset(void *dest, uint8_t val, size_t n) {
+    uint8_t *d = (uint8_t *)dest;
+    for (size_t i = 0; i < n; i++) {
+        d[i] = val;
+    }
+}
+
+static int kmemcmp(const void *s1, const void *s2, size_t n) {
+    const uint8_t *p1 = (const uint8_t *)s1;
+    const uint8_t *p2 = (const uint8_t *)s2;
+    for (size_t i = 0; i < n; i++) {
+        if (p1[i] != p2[i]) {
+            return (int)p1[i] - (int)p2[i];
+        }
+    }
+    return 0;
+}
+
 /*
  * Shell Command Table Structure
  */
@@ -646,25 +664,152 @@ static int parse_single_path_arg(const char *args, char *out_path, size_t max_le
 }
 
 /*
+ * Command-line Argument Parser for 'run'
+ */
+static char run_argv_storage[PROCESS_MAX_ARGS][PROCESS_MAX_ARG_LEN];
+static const char *run_argv_ptrs[PROCESS_MAX_ARGS];
+
+static int parse_run_args(const char *input, char *path, size_t max_path,
+                          int *out_argc,
+                          char argv_storage[PROCESS_MAX_ARGS][PROCESS_MAX_ARG_LEN],
+                          const char *argv_ptrs[PROCESS_MAX_ARGS]) {
+    *out_argc = 0;
+    if (input == NULL) {
+        return -1;
+    }
+
+    const char *p = input;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') {
+        return -1;
+    }
+
+    /* 1. Parse executable path */
+    size_t pi = 0;
+    if (*p == '"' || *p == '\'') {
+        char q = *p++;
+        while (*p && *p != q) {
+            char ch = *p++;
+            if (ch == '\\' && *p) {
+                ch = *p++;
+            }
+            if (pi + 1 < max_path) {
+                path[pi++] = ch;
+            } else {
+                return -4;
+            }
+        }
+        if (*p != q) {
+            return -2; /* Unterminated quote */
+        }
+        p++; /* Skip closing quote */
+    } else {
+        while (*p && *p != ' ' && *p != '\t') {
+            char ch = *p++;
+            if (ch == '\\' && *p) {
+                ch = *p++;
+            }
+            if (pi + 1 < max_path) {
+                path[pi++] = ch;
+            } else {
+                return -4;
+            }
+        }
+    }
+    path[pi] = '\0';
+    if (pi == 0) {
+        return -1;
+    }
+
+    /* 2. Parse arguments */
+    int argc = 0;
+    size_t total_len = 0;
+
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+
+        if (argc >= PROCESS_MAX_ARGS) {
+            return -3; /* Too many arguments */
+        }
+
+        size_t ai = 0;
+        char *arg_buf = argv_storage[argc];
+
+        if (*p == '"' || *p == '\'') {
+            char q = *p++;
+            while (*p && *p != q) {
+                char ch = *p++;
+                if (ch == '\\' && *p) {
+                    ch = *p++;
+                }
+                if (ai + 1 < PROCESS_MAX_ARG_LEN) {
+                    arg_buf[ai++] = ch;
+                } else {
+                    return -4; /* Argument too long */
+                }
+            }
+            if (*p != q) {
+                return -2; /* Unterminated quote */
+            }
+            p++; /* Skip closing quote */
+        } else {
+            while (*p && *p != ' ' && *p != '\t') {
+                char ch = *p++;
+                if (ch == '\\' && *p) {
+                    ch = *p++;
+                }
+                if (ai + 1 < PROCESS_MAX_ARG_LEN) {
+                    arg_buf[ai++] = ch;
+                } else {
+                    return -4; /* Argument too long */
+                }
+            }
+        }
+
+        arg_buf[ai] = '\0';
+        total_len += (ai + 1);
+        if (total_len > PROCESS_MAX_ARG_TOTAL) {
+            return -4; /* Total arguments too long */
+        }
+
+        argv_ptrs[argc] = arg_buf;
+        argc++;
+    }
+
+    *out_argc = argc;
+    return 0;
+}
+
+/*
  * Built-in Command: run
- * Loads and executes an ELF64 executable from a VFS path in Ring 3.
- * Usage: run <path>
+ * Loads and executes an ELF64 executable from a VFS path in Ring 3 with arguments.
+ * Usage: run <path> [arg1] [arg2] ...
  */
 static void builtin_run(const char *args) {
     char path[VFS_PATH_MAX];
-    int parse_res = parse_single_path_arg(args, path, sizeof(path));
+    int argc = 0;
+    int parse_res = parse_run_args(args, path, sizeof(path), &argc, run_argv_storage, run_argv_ptrs);
     if (parse_res == -1) {
-        vga_puts("Usage: run <path>\n");
+        vga_puts("Usage: run <path> [args...]\n");
         return;
     }
     if (parse_res == -2) {
-        vga_puts("run: too many arguments\n");
+        vga_puts("Error: Unterminated quote in arguments\n");
+        return;
+    }
+    if (parse_res == -3) {
+        vga_puts("Error: Too many arguments (maximum 32)\n");
+        return;
+    }
+    if (parse_res == -4) {
+        vga_puts("Error: Arguments exceed maximum length\n");
         return;
     }
 
     /* Execute ELF through VFS/FD pipeline */
     process_t *proc = NULL;
-    int err = process_exec_path(path, "user_proc", &proc);
+    int err = process_exec_path_args(path, "user_proc", argc, run_argv_ptrs, &proc);
     if (err == ELF_ERR_NOT_FOUND && kstrncmp(path, "/disk", 5) != 0) {
         char disk_path[VFS_PATH_MAX];
         size_t plen = kstrlen(path);
@@ -678,7 +823,7 @@ static void builtin_run(const char *args) {
                 for (size_t i = 0; i <= plen; i++) {
                     disk_path[5 + i] = path[i];
                 }
-                err = process_exec_path(disk_path, "user_proc", &proc);
+                err = process_exec_path_args(disk_path, "user_proc", argc, run_argv_ptrs, &proc);
             }
         } else {
             if (6 + plen < sizeof(disk_path)) {
@@ -691,7 +836,7 @@ static void builtin_run(const char *args) {
                 for (size_t i = 0; i <= plen; i++) {
                     disk_path[6 + i] = path[i];
                 }
-                err = process_exec_path(disk_path, "user_proc", &proc);
+                err = process_exec_path_args(disk_path, "user_proc", argc, run_argv_ptrs, &proc);
             }
         }
     }
@@ -977,6 +1122,196 @@ static void builtin_runtimetest(const char *args) {
         return;
     }
     vga_puts("[OK] sys_chdir to nonexistent dir returns ENOENT\n");
+
+    /* 8. Stage 14C: fd_seek tests including INT64_MIN and overflow */
+    int s_fd = fd_open(kproc, "/readme.txt", O_RDONLY);
+    if (s_fd < 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] Failed to open /readme.txt for seek test\n");
+        return;
+    }
+    int64_t int64_min = (int64_t)0x8000000000000000ULL;
+    int64_t int64_max = (int64_t)0x7FFFFFFFFFFFFFFFULL;
+
+    if (fd_seek(kproc, s_fd, 6, SEEK_SET) != 6 ||
+        fd_seek(kproc, s_fd, 4, SEEK_CUR) != 10 ||
+        fd_seek(kproc, s_fd, 0, SEEK_END) < 10 ||
+        fd_seek(kproc, s_fd, -100, SEEK_SET) != SYSCALL_EINVAL ||
+        fd_seek(kproc, s_fd, 0, 99) != SYSCALL_EINVAL ||
+        fd_seek(kproc, 99, 0, SEEK_SET) != SYSCALL_EBADF) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_seek validation failed\n");
+        fd_close(kproc, s_fd);
+        return;
+    }
+
+    /* Set known offset = 10 */
+    fd_seek(kproc, s_fd, 10, SEEK_SET);
+
+    /* Test INT64_MIN handling for SEEK_SET, SEEK_CUR, SEEK_END */
+    if (fd_seek(kproc, s_fd, int64_min, SEEK_SET) != SYSCALL_EINVAL ||
+        fd_seek(kproc, s_fd, 0, SEEK_CUR) != 10 ||
+        fd_seek(kproc, s_fd, int64_min, SEEK_CUR) != SYSCALL_EINVAL ||
+        fd_seek(kproc, s_fd, 0, SEEK_CUR) != 10 ||
+        fd_seek(kproc, s_fd, int64_min, SEEK_END) != SYSCALL_EINVAL ||
+        fd_seek(kproc, s_fd, 0, SEEK_CUR) != 10) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_seek INT64_MIN rejection or offset modification failed\n");
+        fd_close(kproc, s_fd);
+        return;
+    }
+
+    /* Test negative offset larger than current position */
+    if (fd_seek(kproc, s_fd, -11, SEEK_CUR) != SYSCALL_EINVAL ||
+        fd_seek(kproc, s_fd, 0, SEEK_CUR) != 10) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_seek underflow rejection failed\n");
+        fd_close(kproc, s_fd);
+        return;
+    }
+
+    /* Test positive overflow near INT64_MAX */
+    if (fd_seek(kproc, s_fd, int64_max, SEEK_CUR) != SYSCALL_EOVERFLOW ||
+        fd_seek(kproc, s_fd, 0, SEEK_CUR) != 10) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_seek overflow rejection failed\n");
+        fd_close(kproc, s_fd);
+        return;
+    }
+
+    /* Test valid negative offset */
+    if (fd_seek(kproc, s_fd, -4, SEEK_CUR) != 6 ||
+        fd_seek(kproc, s_fd, 0, SEEK_CUR) != 6) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] fd_seek valid negative offset failed\n");
+        fd_close(kproc, s_fd);
+        return;
+    }
+
+    fd_close(kproc, s_fd);
+    vga_puts("[OK] fd_seek (SEEK_SET, SEEK_CUR, SEEK_END, invalid bounds)\n");
+
+    /* 9. Stage 14C: sys_stat tests */
+    syscall_stat_t *ustat = (syscall_stat_t *)(USER_STACK_VADDR + 256);
+    kstrcpy(user_path_buf, "/readme.txt");
+    if (sys_stat(user_path_buf, ustat) != 0 || ustat->st_mode != 1 || ustat->st_size == 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_stat on /readme.txt failed\n");
+        return;
+    }
+    kstrcpy(user_path_buf, "/bin");
+    if (sys_stat(user_path_buf, ustat) != 0 || ustat->st_mode != 2) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_stat on /bin failed\n");
+        return;
+    }
+    kstrcpy(user_path_buf, "/nonexistent_path_xyz");
+    if (sys_stat(user_path_buf, ustat) != SYSCALL_ENOENT) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_stat nonexistent path did not return ENOENT\n");
+        return;
+    }
+    if (sys_stat((const char *)0x100000, ustat) != SYSCALL_EFAULT ||
+        sys_stat(user_path_buf, (syscall_stat_t *)0x100000) != SYSCALL_EFAULT) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_stat pointer validation failed\n");
+        return;
+    }
+    vga_puts("[OK] sys_stat on file, directory, missing path, and pointer security\n");
+
+    /* 10. Stage 14C: sys_mkdir and sys_unlink */
+    kstrcpy(user_path_buf, "/test_mkdir_kernel");
+    if (sys_mkdir(user_path_buf) != 0) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_mkdir failed\n");
+        return;
+    }
+    if (sys_mkdir(user_path_buf) != SYSCALL_EEXIST) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] duplicate sys_mkdir did not return EEXIST\n");
+        return;
+    }
+    if (sys_unlink(user_path_buf) != SYSCALL_EISDIR) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_unlink on directory did not return EISDIR\n");
+        return;
+    }
+    kstrcpy(user_path_buf, "/");
+    if (sys_unlink(user_path_buf) != SYSCALL_EPERM) {
+        vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_puts("[FAIL] sys_unlink on root did not return EPERM\n");
+        return;
+    }
+    vga_puts("[OK] sys_mkdir, duplicate rejection, and sys_unlink directory/root guards\n");
+
+    /* 11. Stage 14C: Strengthened 13-Step PFS Open-Unlink Lifecycle & Direct Block Bitmap Verification Test */
+    const pfs_superblock_t *sb = pfs_get_superblock();
+    if (sb && pfs_is_mounted()) {
+        uint32_t init_free_inodes = sb->free_inodes;
+        uint32_t init_free_blocks = sb->free_blocks;
+
+        /* Step 1 & 2: Create file with known payload allocating >= 2 data blocks (700 bytes > 512) */
+        vfs_node_t *ou_node = NULL;
+        int unc = vfs_create("/disk/open_unlink_rt.txt", &ou_node);
+        if (unc == VFS_OK && ou_node != NULL) {
+            char ou_payload[700];
+            for (size_t i = 0; i < sizeof(ou_payload); i++) {
+                ou_payload[i] = (char)('0' + (i % 10));
+            }
+            size_t payload_len = sizeof(ou_payload);
+            size_t obw = 0;
+            vfs_write(ou_node, ou_payload, 0, payload_len, &obw);
+            uint32_t target_ino = (uint32_t)(uintptr_t)ou_node->internal_data;
+
+            /* Step 3: Identify and retain exact inode and all allocated direct block numbers */
+            uint32_t allocated_blocks[PFS_DIRECT_BLOCKS];
+            uint32_t alloc_count = 0;
+            pfs_get_inode_blocks(target_ino, allocated_blocks, &alloc_count);
+
+            /* Step 4: Open file and retain descriptor */
+            int ofd = fd_open(kproc, "/disk/open_unlink_rt.txt", O_RDWR);
+
+            /* Step 5: Unlink directory entry */
+            vfs_unlink("/disk/open_unlink_rt.txt");
+
+            /* Step 6: Verify new open fails with ENOENT */
+            int new_fd = fd_open(kproc, "/disk/open_unlink_rt.txt", O_RDONLY);
+            if (new_fd >= 0) {
+                fd_close(kproc, new_fd);
+            }
+
+            /* Step 7: Read known contents through retained descriptor */
+            char obuf[768];
+            kmemset(obuf, 0, sizeof(obuf));
+            int64_t onr = fd_read(kproc, ofd, obuf, sizeof(obuf));
+
+            /* Step 8: Close final descriptor */
+            fd_close(kproc, ofd);
+
+            /* Step 9: Verify every data block's bitmap bit is cleared on disk */
+            bool blocks_freed_ok = (alloc_count >= 2);
+            for (uint32_t b = 0; b < alloc_count; b++) {
+                if (pfs_verify_block_freed(allocated_blocks[b]) != PFS_OK) {
+                    blocks_freed_ok = false;
+                    break;
+                }
+            }
+
+            /* Step 10, 11, 12, 13: Verify inode bitmap, inode table entry, counter restoration, and double free */
+            if (new_fd == SYSCALL_ENOENT && onr == (int64_t)payload_len &&
+                kmemcmp(obuf, ou_payload, payload_len) == 0 &&
+                blocks_freed_ok &&
+                sb->free_blocks == init_free_blocks &&
+                sb->free_inodes == init_free_inodes &&
+                pfs_verify_inode_freed(target_ino) == PFS_OK) {
+                vga_puts("[OK] open-unlink deferred reclamation and bitmap consistency\n");
+            } else {
+                vga_set_color(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+                vga_puts("[FAIL] open-unlink 13-step verification failed\n");
+                return;
+            }
+        }
+    }
 
     /* Restore cwd */
     process_set_cwd(kproc, orig_cwd ? orig_cwd : vfs_get_root());

@@ -29,6 +29,10 @@ FILES_TO_POPULATE = [
     ("ls", "build/user/ls.elf"),
     ("pwd", "build/user/pwd.elf"),
     ("cd_test", "build/user/cd_test.elf"),
+    ("cat", "build/user/cat.elf"),
+    ("mkdir", "build/user/mkdir.elf"),
+    ("rm", "build/user/rm.elf"),
+    ("argv_test", "build/user/argv_test.elf"),
 ]
 
 PFS_MAGIC = 0x50465331  # 'PFS1'
@@ -86,7 +90,7 @@ def populate_pfs():
     ]
 
     ENTRIES_PER_SEC = PFS_SECTOR_SIZE // 64  # 8
-    num_root_blocks = (len(root_entries) + ENTRIES_PER_SEC - 1) // ENTRIES_PER_SEC
+    num_root_blocks = max(3, (len(root_entries) + ENTRIES_PER_SEC - 1) // ENTRIES_PER_SEC)
     num_bin_blocks = (len(bin_entries) + ENTRIES_PER_SEC - 1) // ENTRIES_PER_SEC
 
     root_blocks = list(range(0, num_root_blocks))

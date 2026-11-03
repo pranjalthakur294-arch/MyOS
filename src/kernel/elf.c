@@ -37,6 +37,13 @@ static void kmemset(void *dest, uint8_t val, size_t n) {
     }
 }
 
+static size_t kstrlen(const char *s) {
+    size_t len = 0;
+    while (s && s[len] != '\0') {
+        len++;
+    }
+    return len;
+}
 
 static void kstrncpy(char *dest, const char *src, size_t n) {
     size_t i = 0;
@@ -457,6 +464,7 @@ int elf_load_into_process(process_t *proc, const void *image, size_t size, uint6
         return ELF_ERR_NO_MEMORY;
     }
 
+    proc->stack_phys = stack_frame;
     proc->user_frames[proc->user_frame_count++] = stack_frame;
     kmemset((void *)stack_frame, 0, VMM_PAGE_SIZE);
 
@@ -473,15 +481,37 @@ int elf_load_into_process(process_t *proc, const void *image, size_t size, uint6
 }
 
 /*
- * process_create_from_elf - Creates and initializes an isolated user process from an ELF image.
+ * process_create_from_elf_args - Creates and initializes an isolated user process from an ELF image
+ * with initial command-line arguments placed on the user stack.
  *
- * Transactional: on ANY failure during validation, allocation, mapping, or task creation,
- * all allocated frames are cleanly freed and NULL is returned with zero memory leaks.
+ * Transactional: on ANY failure during validation, allocation, mapping, stack construction,
+ * or task creation, all allocated frames are cleanly freed and NULL is returned with zero memory leaks.
  */
-process_t *process_create_from_elf(const void *image, size_t size, const char *name) {
+process_t *process_create_from_elf_args(const void *image, size_t size, const char *name, int argc, const char *const argv[]) {
     /* 1. Preliminary validation before touching process or memory subsystem */
     int val = elf_validate(image, size);
     if (val != ELF_OK) {
+        return NULL;
+    }
+
+    /* Validate argument bounds: reject negative argc or exceeding limit */
+    if (argc < 0 || argc > PROCESS_MAX_ARGS) {
+        return NULL;
+    }
+
+    /* Validate argument strings length & total size */
+    size_t total_str_bytes = 0;
+    for (int i = 0; i < argc; i++) {
+        if (!argv || !argv[i]) {
+            return NULL;
+        }
+        size_t len = kstrlen(argv[i]) + 1;
+        if (len > PROCESS_MAX_ARG_LEN) {
+            return NULL;
+        }
+        total_str_bytes += len;
+    }
+    if (total_str_bytes > PROCESS_MAX_ARG_TOTAL) {
         return NULL;
     }
 
@@ -528,8 +558,52 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
         return NULL;
     }
 
-    /* 5. Create underlying preemptive task configured for Ring 3 */
-    task_t *t = task_create_user(entry_point, USER_ELF_STACK_TOP, pml4_phys, proc, name);
+    /* 5. Construct argument vector and layout on initial user stack */
+    uint8_t *stack_mem = (uint8_t *)proc->stack_phys;
+    size_t str_offset = VMM_PAGE_SIZE; /* 4096 */
+    uint64_t argv_user_addrs[PROCESS_MAX_ARGS];
+
+    for (int i = argc - 1; i >= 0; i--) {
+        size_t len = kstrlen(argv[i]) + 1;
+        str_offset -= len;
+        kmemcpy(stack_mem + str_offset, argv[i], len);
+        argv_user_addrs[i] = USER_ELF_STACK_VADDR + str_offset;
+    }
+
+    /* Align down to 8 bytes */
+    str_offset &= ~7ULL;
+
+    /* Table space: argc (8) + argv pointers ((argc + 1) * 8) */
+    size_t table_bytes = (size_t)(argc + 2) * 8;
+    if ((str_offset - table_bytes) % 16 != 0) {
+        str_offset -= 8; /* Alignment padding for 16-byte user_rsp */
+    }
+
+    if (str_offset < table_bytes + 256) {
+        /* Stack overflow: not enough room on initial stack page */
+        for (size_t k = 0; k < proc->user_frame_count; k++) {
+            if (proc->user_frames[k]) pmm_free_frame(proc->user_frames[k]);
+        }
+        for (size_t k = 0; k < proc->table_frame_count; k++) {
+            if (proc->table_frames[k]) pmm_free_frame(proc->table_frames[k]);
+        }
+        if (proc->pml4_phys) pmm_free_frame(proc->pml4_phys);
+        kmemset(proc, 0, sizeof(process_t));
+        return NULL;
+    }
+
+    size_t rsp_offset = str_offset - table_bytes;
+    uint64_t *sp = (uint64_t *)(stack_mem + rsp_offset);
+    sp[0] = (uint64_t)argc;
+    for (int i = 0; i < argc; i++) {
+        sp[1 + i] = argv_user_addrs[i];
+    }
+    sp[1 + argc] = 0ULL; /* Null terminator for argv */
+
+    uint64_t initial_user_rsp = USER_ELF_STACK_VADDR + rsp_offset;
+
+    /* 6. Create underlying preemptive task configured for Ring 3 */
+    task_t *t = task_create_user(entry_point, initial_user_rsp, pml4_phys, proc, name);
     if (!t) {
         /* Rollback */
         for (size_t k = 0; k < proc->user_frame_count; k++) {
@@ -543,7 +617,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
         return NULL;
     }
 
-    /* 6. Populate PCB fields */
+    /* 7. Populate PCB fields */
     process_t *caller = process_current();
     if (!caller) caller = process_get(0);
 
@@ -554,7 +628,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     kstrncpy(proc->name, name ? name : "elf_proc", PROCESS_NAME_MAX);
     proc->task = t;
     proc->user_entry = entry_point;
-    proc->user_stack_top = USER_ELF_STACK_TOP;
+    proc->user_stack_top = initial_user_rsp;
     proc->kernel_stack_top = ((uint64_t)t->stack_base + t->stack_size) & ~0xFULL;
     proc->exit_status = 0;
     proc->reaped = false;
@@ -565,6 +639,10 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
     fd_init_process(proc);
 
     return proc;
+}
+
+process_t *process_create_from_elf(const void *image, size_t size, const char *name) {
+    return process_create_from_elf_args(image, size, name, 0, NULL);
 }
 
 /*
@@ -582,7 +660,7 @@ process_t *process_create_from_elf(const void *image, size_t size, const char *n
  *   8. Free temporary buffer immediately (kfree)
  *   9. Return newly created process pointer or negative error code
  */
-int process_exec_path(const char *path, const char *name, struct process **out_proc) {
+int process_exec_path_args(const char *path, const char *name, int argc, const char *const argv[], struct process **out_proc) {
     if (out_proc != NULL) {
         *out_proc = NULL;
     }
@@ -673,7 +751,7 @@ int process_exec_path(const char *path, const char *name, struct process **out_p
     }
 
     /* Create process with private CR3 and mapped PT_LOAD segments */
-    process_t *proc = process_create_from_elf(buf, sz, name ? name : path);
+    process_t *proc = process_create_from_elf_args(buf, sz, name ? name : path, argc, argv);
 
     /* 7. Free temporary ELF buffer immediately after segment mapping */
     kfree(buf);
@@ -686,6 +764,10 @@ int process_exec_path(const char *path, const char *name, struct process **out_p
         *out_proc = proc;
     }
     return 0;
+}
+
+int process_exec_path(const char *path, const char *name, struct process **out_proc) {
+    return process_exec_path_args(path, name, 0, NULL, out_proc);
 }
 
 int process_create_from_elf_path(const char *path, const char *name, struct process **out_proc) {
